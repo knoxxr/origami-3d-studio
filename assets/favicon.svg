@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <rect width="64" height="64" rx="15" fill="#f6f2eb"/>
+  <rect x="0.75" y="0.75" width="62.5" height="62.5" rx="14.25" stroke="#d8cfc2" stroke-width="1.5"/>
+  <!-- Left rear wing -->
+  <polygon points="8,27 25,31 23,38 14,35" fill="#df5b4c"/>
+  <!-- Tail -->
+  <polygon points="37,33 52,13 43,37" fill="#c93e30"/>
+  <!-- Center cream body -->
+  <polygon points="24,48 33,27 42,46 33,44" fill="#f7f1e3" stroke="#d9cdb8" stroke-width="0.8" stroke-linejoin="round"/>
+  <line x1="33" y1="27" x2="33" y2="44" stroke="#cfc2aa" stroke-width="1"/>
+  <!-- Neck & head -->
+  <polygon points="23,49 23,19 27,20 29,39" fill="#b83225"/>
+  <polygon points="23,19 14,26 23,23" fill="#e25d4e"/>
+  <polygon points="23,19 27,20 23,23" fill="#cf4436"/>
+  <!-- Right front wing -->
+  <polygon points="29,37 43,33 56,43 34,42" fill="#e05647"/>
+  <polygon points="29,37 34,42 56,43" fill="#cf4436"/>
+</svg>

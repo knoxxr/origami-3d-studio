@@ -46,7 +46,19 @@ const bundledJs = [
 const css = fs.readFileSync(path.join(root, 'styles.css'), 'utf8');
 const htmlTemplate = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 
+const assetsDir = path.join(root, 'assets');
+const faviconSvgPath = path.join(assetsDir, 'favicon.svg');
+const inlineFaviconDataUri = fs.existsSync(faviconSvgPath)
+  ? `data:image/svg+xml,${encodeURIComponent(fs.readFileSync(faviconSvgPath, 'utf8').replace(/\s+/g, ' ').trim())}`
+  : '';
+
 const selfContainedHtml = htmlTemplate
+  .replace(
+    'href="/favicon.svg"',
+    inlineFaviconDataUri ? `href="${inlineFaviconDataUri}"` : 'href="/favicon.svg"'
+  )
+  .replace(/^\s*<link rel="(?:apple-touch-icon|manifest|shortcut icon)"[^>]*>\n?/gm, '')
+  .replace(/^\s*<link rel="icon" type="image\/png"[^>]*>\n?/gm, '')
   .replace(
     '<link rel="stylesheet" href="./styles.css" />',
     `<script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>\n  <style>\n${css}\n  </style>`
@@ -69,6 +81,11 @@ const vercelHtml = htmlTemplate
 
 fs.mkdirSync(path.join(root, 'dist'), { recursive: true });
 fs.mkdirSync(path.join(root, 'public'), { recursive: true });
+if (fs.existsSync(assetsDir)) {
+  for (const file of fs.readdirSync(assetsDir)) {
+    fs.copyFileSync(path.join(assetsDir, file), path.join(root, 'public', file));
+  }
+}
 const outPath = path.join(root, 'dist/origami_3d_studio.html');
 const vercelOutPath = path.join(root, 'public/index.html');
 fs.writeFileSync(outPath, selfContainedHtml, 'utf8');
