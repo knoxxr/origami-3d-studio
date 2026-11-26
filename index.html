@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>종이공방 3D · 3D 종이접기 스튜디오 & GIF 내보내기</title>
+  <meta name="description" content="알려진 종이접기 기술을 3D로 구현하고, 직접 접은 작품의 전 과정을 애니메이션 GIF로 내보내는 3D 종이접기 스튜디오" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="studio-shell">
+    <!-- Top Header -->
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round">
+            <polygon points="12,2 22,12 12,22 2,12" />
+            <line x1="12" y1="2" x2="12" y2="22" />
+            <line x1="2" y1="12" x2="22" y2="12" />
+          </svg>
+        </div>
+        <div>
+          <h1 class="brand-title">종이공방 3D</h1>
+          <div class="brand-sub">Origami 3D Studio · GIF Export</div>
+        </div>
+      </div>
+
+      <nav class="mode-tabs" aria-label="스튜디오 모드">
+        <button id="tab-library" class="mode-tab active">작품 · 기법 라이브러리</button>
+        <button id="tab-free" class="mode-tab">자유 창작 스튜디오</button>
+      </nav>
+
+      <div class="topbar-right">
+        <div class="view-toggles">
+          <button id="toggle-guides" class="icon-chip active" title="접기선 표시">접기선</button>
+          <button id="toggle-cp" class="icon-chip active" title="2D 전개도 표시">전개도</button>
+          <button id="toggle-wire" class="icon-chip" title="와이어프레임 보기">와이어</button>
+        </div>
+        <button id="btn-open-gif" class="btn-primary">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          GIF 내보내기
+        </button>
+      </div>
+    </header>
+
+    <!-- Main 3-Zone Workspace -->
+    <main class="workspace">
+      <!-- Left Sidebar -->
+      <aside class="sidebar">
+        <!-- Mode 1: Library Panel -->
+        <div id="panel-library" class="sidebar-scroll">
+          <div id="library-info-card" class="info-card"></div>
+
+          <div class="filter-bar" id="catalog-filter-bar" role="tablist" aria-label="기법 분류 필터">
+            <button class="filter-chip active" data-filter="all">전체 25</button>
+            <button class="filter-chip" data-filter="model">작품 5</button>
+            <button class="filter-chip" data-filter="basic">기본 5</button>
+            <button class="filter-chip" data-filter="3d">입체 8</button>
+            <button class="filter-chip" data-filter="advanced">고급 7</button>
+          </div>
+
+          <div id="sec-models">
+            <div class="section-label"><span>완성 작품 (3D 단계별)</span><span>5종</span></div>
+            <div id="catalog-models" class="catalog-grid"></div>
+          </div>
+
+          <div id="sec-basic">
+            <div class="section-label"><span>기본 접기 기술</span><span>5종</span></div>
+            <div id="catalog-tech-basic" class="catalog-grid"></div>
+          </div>
+
+          <div id="sec-3d">
+            <div class="section-label"><span>입체 · 기본형 · 반전 기술</span><span>8종</span></div>
+            <div id="catalog-tech-3d" class="catalog-grid"></div>
+          </div>
+
+          <div id="sec-advanced">
+            <div class="section-label"><span>고급 · 싱크 · 테셀레이션</span><span>7종</span></div>
+            <div id="catalog-tech-adv" class="catalog-grid"></div>
+          </div>
+        </div>
+
+        <!-- Mode 2: Free Fold Studio Panel -->
+        <div id="panel-free" class="sidebar-scroll" style="display:none;">
+          <div>
+            <div class="section-label"><span>작품 이름 (GIF 제목)</span></div>
+            <input id="free-title-input" type="text" class="text-input" value="나의 3D 종이접기" />
+          </div>
+
+          <div>
+            <div class="section-label"><span>접기 기술 선택</span></div>
+            <div class="tool-grid">
+              <button class="tool-btn active" data-tool="valley">
+                <span class="tool-btn-name" style="color:#2563eb;">계곡 접기</span>
+                <span class="tool-btn-sub">앞쪽으로 접기 (- - -)</span>
+              </button>
+              <button class="tool-btn" data-tool="mountain">
+                <span class="tool-btn-name" style="color:#dc2626;">산 접기</span>
+                <span class="tool-btn-sub">뒤쪽으로 접기 (- · -)</span>
+              </button>
+              <button class="tool-btn" data-tool="precrease">
+                <span class="tool-btn-name">접었다 펴기</span>
+                <span class="tool-btn-sub">예비선 만들기</span>
+              </button>
+              <button class="tool-btn" data-tool="pleat">
+                <span class="tool-btn-name">계단 접기</span>
+                <span class="tool-btn-sub">계곡+산 평행 주름</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="control-card">
+            <div class="control-row">
+              <strong>접기 각도</strong>
+              <span id="free-angle-val" style="font-family:monospace;font-weight:700;">180°</span>
+            </div>
+            <input id="free-angle-slider" type="range" min="15" max="180" step="5" value="180" style="width:100%;accent-color:#cf4436;" />
+            <div class="angle-chips">
+              <button class="angle-chip" data-angle="90">90°</button>
+              <button class="angle-chip" data-angle="135">135°</button>
+              <button class="angle-chip" data-angle="180">180° (완전)</button>
+            </div>
+
+            <div id="pleat-offset-row" class="control-row" style="display:none;">
+              <strong>계단 폭</strong>
+              <input id="free-pleat-offset" type="range" min="0.12" max="0.5" step="0.02" value="0.25" style="flex:1;accent-color:#cf4436;" />
+              <span id="free-pleat-val" style="font-family:monospace;">25%</span>
+            </div>
+
+            <div>
+              <div class="section-label" style="margin-bottom:4px;"><span>접기 대상 겹 (레이어)</span></div>
+              <div class="seg-mini">
+                <button id="layer-all" class="active">전체 겹</button>
+                <button id="layer-top">맨 위 겹만</button>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div class="section-label"><span>원클릭 기법 · 종이 조작</span></div>
+            <div class="macro-grid">
+              <button class="macro-btn" data-macro="diag">대각선 접기</button>
+              <button class="macro-btn" data-macro="halfV">세로 반 접기</button>
+              <button class="macro-btn" data-macro="halfH">가로 반 접기</button>
+              <button class="macro-btn" data-macro="kite">아이스크림 접기</button>
+              <button class="macro-btn" data-macro="blintz">방석 접기</button>
+              <button class="macro-btn" data-macro="pleat">계단 접기</button>
+              <button class="macro-btn" data-macro="accordion">아코디언 2단</button>
+              <button class="macro-btn" data-macro="grid">십자 예비선</button>
+              <button class="macro-btn" data-macro="flip">종이 뒤집기</button>
+              <button class="macro-btn" data-macro="rot45">45° 회전</button>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:6px;">
+            <button id="btn-undo" class="btn-secondary" style="flex:1;" disabled>실행 취소</button>
+            <button id="btn-redo" class="btn-secondary" style="flex:1;" disabled>다시 실행</button>
+            <button id="btn-reset" class="btn-secondary" title="새 종이로 초기화">초기화</button>
+          </div>
+        </div>
+
+        <!-- Paper Color Swatches Footer -->
+        <div class="paper-bar">
+          <div class="section-label" style="margin-bottom:6px;"><span>색종이 앞·뒷면 색상</span></div>
+          <div class="swatch-row">
+            <div id="paper-swatches" style="display:flex;gap:6px;"></div>
+            <div class="color-pickers">
+              <input id="color-front" type="color" value="#cf4436" title="앞면 색상" />
+              <input id="color-back" type="color" value="#f7f1e3" title="뒷면 색상" />
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Center 3D Viewport + Timeline -->
+      <section class="viewport-wrap">
+        <div class="canvas-stage">
+          <canvas id="viewport-canvas"></canvas>
+
+          <!-- Floating Top HUD -->
+          <div class="viewport-hud-top">
+            <div class="work-card">
+              <div class="work-card-head">
+                <span id="work-title-badge">종이학 (학접기)</span>
+                <span id="work-subtitle">Traditional Paper Crane</span>
+              </div>
+              <div class="hud-step-row">
+                <span id="hud-step-counter">STEP 1 / 10</span>
+                <span id="hud-step-title">대각선 예비선 접기</span>
+              </div>
+              <p id="hud-step-desc"></p>
+            </div>
+
+            <div class="cam-bar" role="toolbar" aria-label="3D 카메라 시점">
+              <button id="cam-3d" class="cam-btn">입체</button>
+              <button id="cam-front" class="cam-btn">정면</button>
+              <button id="cam-side" class="cam-btn">측면</button>
+              <button id="cam-top" class="cam-btn">위</button>
+              <button id="cam-spin" class="cam-btn">회전</button>
+            </div>
+          </div>
+
+          <!-- Free Studio 3-Click Guide Banner -->
+          <div id="free-guide-banner" class="free-banner">
+            <span class="free-dot"></span>
+            <span id="free-guide-text">1/3 · 시작점을 클릭하세요</span>
+          </div>
+
+          <!-- 2D Crease Pattern Mini Overlay -->
+          <div id="cp-overlay" class="cp-overlay">
+            <div class="cp-title">
+              <span>2D 전개도</span>
+              <span class="cp-legend">
+                <span class="cp-v">계곡</span>
+                <span class="cp-m">산</span>
+              </span>
+            </div>
+            <canvas id="cp-canvas" width="128" height="128"></canvas>
+          </div>
+        </div>
+
+        <!-- Bottom Timeline Dock -->
+        <footer class="timeline-dock">
+          <div class="timeline-controls">
+            <div class="play-group">
+              <button id="btn-restart" class="btn-secondary" title="처음부터 다시 재생">처음</button>
+              <button id="btn-prev" class="btn-secondary" title="이전 단계">◀</button>
+              <button id="btn-play" class="btn-primary">일시정지</button>
+              <button id="btn-next" class="btn-secondary" title="다음 단계">▶</button>
+            </div>
+            <input id="timeline-slider" type="range" min="0" max="10" step="0.01" value="0" />
+            <select id="speed-select" class="speed-select" title="재생 속도">
+              <option value="0.5">0.5x</option>
+              <option value="1" selected>1.0x</option>
+              <option value="1.5">1.5x</option>
+              <option value="2">2.0x</option>
+            </select>
+          </div>
+          <div id="step-pills" class="step-pills"></div>
+        </footer>
+      </section>
+    </main>
+  </div>
+
+  <!-- Full-Process GIF Export Studio Modal -->
+  <div id="gif-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="gif-modal-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div>
+          <h2 id="gif-modal-title" class="modal-title">과정 전체 GIF 내보내기</h2>
+          <div id="gif-work-name" class="modal-sub">종이학 (10단계 전체 과정)</div>
+        </div>
+        <button id="gif-close-btn" class="modal-close" aria-label="닫기">×</button>
+      </div>
+
+      <div class="gif-form-grid">
+        <div class="form-field">
+          <label for="gif-resolution">해상도</label>
+          <select id="gif-resolution">
+            <option value="480x360">480 × 360 (빠른 생성)</option>
+            <option value="640x480" selected>640 × 480 (권장 화질)</option>
+            <option value="800x600">800 × 600 (고화질)</option>
+          </select>
+        </div>
+
+        <div class="form-field">
+          <label for="gif-fps">프레임 속도 (FPS)</label>
+          <select id="gif-fps">
+            <option value="12">12 fps (가벼움)</option>
+            <option value="16" selected>16 fps (부드러움)</option>
+            <option value="20">20 fps (매우 부드러움)</option>
+          </select>
+        </div>
+
+        <div class="form-field">
+          <label for="gif-speed">단계당 재생 시간</label>
+          <select id="gif-speed">
+            <option value="0.6">빠름 (0.6초/단계)</option>
+            <option value="0.95" selected>보통 (0.95초/단계)</option>
+            <option value="1.35">천천히 (1.35초/단계)</option>
+          </select>
+        </div>
+
+        <div class="form-field">
+          <label for="gif-camera-mode">3D 카메라 연출</label>
+          <select id="gif-camera-mode">
+            <option value="orbit-spin" selected>부드러운 오빗 + 완성 360° 회전</option>
+            <option value="fixed-spin">현재 각도 + 완성 360° 회전</option>
+            <option value="fixed">현재 카메라 각도 고정</option>
+          </select>
+        </div>
+      </div>
+
+      <label class="check-row">
+        <input id="gif-show-hud" type="checkbox" checked style="accent-color:#cf4436;" />
+        GIF에 작품 제목 · 단계 자막 · 진행 바 함께 표시
+      </label>
+
+      <button id="gif-start-btn" class="btn-primary full-w" style="padding:10px 16px;font-size:13.5px;">
+        과정 전체 GIF 생성 시작
+      </button>
+
+      <div id="gif-progress-wrap" class="progress-wrap" style="display:none;">
+        <div class="progress-track">
+          <div id="gif-progress-bar" class="progress-fill"></div>
+        </div>
+        <div id="gif-progress-text" class="progress-text">준비 중...</div>
+      </div>
+
+      <div id="gif-result-wrap" class="gif-result-wrap" style="display:none;">
+        <img id="gif-preview-img" class="gif-preview-img" alt="생성된 종이접기 과정 GIF 미리보기" />
+        <div class="gif-result-footer">
+          <span id="gif-meta-info" class="gif-meta-info"></span>
+          <a id="gif-download-link" class="btn-primary" style="text-decoration:none;">GIF 파일 다운로드 (.gif)</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { initOrigamiStudio } from './src/app.js';
+    initOrigamiStudio();
+  </script>
+</body>
+</html>

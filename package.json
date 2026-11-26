@@ -1,0 +1,12 @@
+{
+  "name": "origami-3d-studio",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "종이공방 3D — 알려진 종이접기 기술 20종 3D 구현 및 과정 전체 GIF 내보내기 스튜디오",
+  "scripts": {
+    "build": "node build.js",
+    "test": "node test/verify.mjs",
+    "dev": "npx serve public"
+  }
+}
