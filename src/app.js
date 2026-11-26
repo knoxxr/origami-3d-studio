@@ -1,9 +1,12 @@
 // ============================================================================
-// app.js — Interactive 3D Origami Studio Controller & Full-Process GIF Exporter
+// app.js — Interactive 3D Origami Studio Controller (Desktop & Mobile Touch)
+// Features: Direct Drag-to-Fold (Huzita-Hatori Axiom 2 live 3D folding!),
+//           2-Point Precision Line Fold, Multi-Touch Pinch Zoom & Orbit,
+//           Mobile Bottom Sheet Drawer, Timeline Scrubber & Full-Process GIF
 // ============================================================================
 
 import { v3, sub, dot, cross, norm, screenToPlane, worldToCamera, projectPoint } from './math3d.js';
-import { compilePlanarTimeline, computeSnapPoints, createInitialPaper } from './planarEngine.js';
+import { compilePlanarTimeline, compilePlanarStep, computeSnapPoints, createInitialPaper } from './planarEngine.js';
 import { ORIGAMI_CATALOG, PAPER_PRESETS } from './kinematicModels.js';
 import { renderOrigami3D, renderCreasePattern2D } from './renderer3d.js';
 import { GifEncoder } from './gifEncoder.js';
@@ -21,12 +24,13 @@ export function initOrigamiStudio() {
     showCP: true,
     autoOrbit: false,
     isDark: false,
+    sheetOpen: false,
 
     // Playback timeline (continuous float in [0, stepCount])
     playPos: 0,
     playing: true,
     playbackSpeed: 1.0,
-    pauseBetweenSteps: 0.42, // seconds hold at end of each step
+    pauseBetweenSteps: 0.42,
     stepHoldTimer: 0,
 
     // 3D Orbit Camera
@@ -39,15 +43,27 @@ export function initOrigamiStudio() {
     freeSteps: [],
     freeRedo: [],
     freeTool: 'valley', // 'valley' | 'mountain' | 'precrease' | 'pleat'
+    freeInteractMode: 'drag', // 'drag' (직관적 끌어접기) | 'line' (선 긋기) | 'orbit' (3D 회전)
     freeAngle: 180,
     freeLayerScope: 'all', // 'all' | 'top'
     freePleatOffset: 0.25,
-    // Interactive 3-click fold state
+
+    // Interactive Line-Fold state
     pickP1: null,
     pickP2: null,
     hoverWorld: null,
     hoveredSnap: null,
     hoverSide: 0,
+
+    // Interactive Direct Drag-to-Fold live state
+    dragFoldActive: false,
+    dragStart: null,
+    dragCurrent: null,
+    dragSnapLabel: '',
+    dragCrease: null,
+    dragLiveStep: null,
+    dragLiveCompiled: null,
+    dragLiveT: 0,
 
     // Compiled timeline cache
     compiledPlanar: null,
@@ -67,7 +83,9 @@ export function initOrigamiStudio() {
   const cpCanvas = $('cp-canvas');
   const cpCtx = cpCanvas.getContext('2d');
 
-  // Detect light/dark theme dynamically (supports Antigravity theme sync!)
+  const isMobileViewport = () => window.innerWidth <= 768;
+
+  // Detect light/dark theme dynamically
   function detectTheme() {
     const html = document.documentElement;
     if (html.classList.contains('dark')) {
@@ -77,8 +95,7 @@ export function initOrigamiStudio() {
     } else {
       const bg = getComputedStyle(document.documentElement).getPropertyValue('--background').trim();
       if (bg && bg.startsWith('#')) {
-        const hex = bg.slice(1);
-        const r = parseInt(hex.slice(0, 2), 16) || 240;
+        const r = parseInt(bg.slice(1, 3), 16) || 240;
         state.isDark = r < 110;
       } else {
         state.isDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
@@ -87,6 +104,22 @@ export function initOrigamiStudio() {
   }
   detectTheme();
   window.addEventListener('themechange', () => { detectTheme(); renderAll(); });
+
+  // ---- Mobile Bottom Sheet Controls ----
+  function openSheet() {
+    state.sheetOpen = true;
+    $('studio-sidebar').classList.add('sheet-open');
+    $('sheet-backdrop').classList.add('open');
+    $('sheet-title').textContent = state.mode === 'library'
+      ? '작품 · 종이접기 기술 (25종)'
+      : '접기 도구 · 기법 설정';
+  }
+
+  function closeSheet() {
+    state.sheetOpen = false;
+    $('studio-sidebar').classList.remove('sheet-open');
+    $('sheet-backdrop').classList.remove('open');
+  }
 
   // ---- Active Work Helpers ----
   function getActiveModel() {
@@ -140,8 +173,7 @@ export function initOrigamiStudio() {
   function selectLibraryModel(id, autoPlay = true) {
     state.mode = 'library';
     state.selectedId = id;
-    state.pickP1 = null;
-    state.pickP2 = null;
+    clearInteractiveDraft();
     rebuildCompiledTimeline();
     const model = getActiveModel();
     if (model.defaultCamera) {
@@ -150,24 +182,24 @@ export function initOrigamiStudio() {
     state.playPos = 0;
     state.stepHoldTimer = 0;
     state.playing = autoPlay;
+    if (isMobileViewport()) closeSheet();
     syncUI();
   }
 
   function switchMode(newMode) {
     if (state.mode === newMode) return;
     state.mode = newMode;
-    state.pickP1 = null;
-    state.pickP2 = null;
-    state.hoverSide = 0;
+    clearInteractiveDraft();
     rebuildCompiledTimeline();
     if (newMode === 'free') {
       state.playing = false;
       state.playPos = state.freeSteps.length;
-      state.targetCamera = { yaw: 0.0, pitch: 0.08, distance: 4.5, target: v3(0, 0, 0) };
+      state.targetCamera = { yaw: 0.0, pitch: 0.14, distance: isMobileViewport() ? 4.3 : 4.5, target: v3(0, 0, 0) };
     } else {
       const m = getActiveModel();
       if (m.defaultCamera) state.targetCamera = { ...m.defaultCamera, target: v3(0, 0, 0) };
     }
+    if (isMobileViewport()) closeSheet();
     syncUI();
   }
 
@@ -179,23 +211,36 @@ export function initOrigamiStudio() {
     state.freeSteps = model.steps.map(s => JSON.parse(JSON.stringify(s)));
     state.freeRedo = [];
     state.mode = 'free';
+    clearInteractiveDraft();
     rebuildCompiledTimeline();
     state.playing = false;
     state.playPos = state.freeSteps.length;
-    state.targetCamera = { yaw: 0.15, pitch: 0.18, distance: 4.5, target: v3(0, 0, 0) };
+    state.targetCamera = { yaw: 0.12, pitch: 0.18, distance: 4.5, target: v3(0, 0, 0) };
+    if (isMobileViewport()) closeSheet();
     syncUI();
   }
 
-  // ---- Free Fold Actions ----
-  function addFreeStep(step) {
-    state.freeSteps.push(step);
-    state.freeRedo = [];
+  function clearInteractiveDraft() {
     state.pickP1 = null;
     state.pickP2 = null;
     state.hoverSide = 0;
+    state.dragFoldActive = false;
+    state.dragStart = null;
+    state.dragCurrent = null;
+    state.dragSnapLabel = '';
+    state.dragCrease = null;
+    state.dragLiveStep = null;
+    state.dragLiveCompiled = null;
+    state.dragLiveT = 0;
+  }
+
+  // ---- Free Fold Actions ----
+  function addFreeStep(step, startOffsetT = 0) {
+    state.freeSteps.push(step);
+    state.freeRedo = [];
+    clearInteractiveDraft();
     rebuildCompiledTimeline();
-    // Smoothly animate the newly added fold!
-    state.playPos = Math.max(0, state.freeSteps.length - 1);
+    state.playPos = Math.max(0, state.freeSteps.length - 1 + startOffsetT);
     state.playing = true;
     state.stepHoldTimer = 0;
     syncUI();
@@ -204,8 +249,7 @@ export function initOrigamiStudio() {
   function undoFreeStep() {
     if (state.freeSteps.length === 0) return;
     state.freeRedo.push(state.freeSteps.pop());
-    state.pickP1 = null;
-    state.pickP2 = null;
+    clearInteractiveDraft();
     rebuildCompiledTimeline();
     state.playing = false;
     state.playPos = state.freeSteps.length;
@@ -221,8 +265,7 @@ export function initOrigamiStudio() {
     state.freeSteps = [];
     state.freeRedo = [];
     state.freePaper = { width: 2, height: 2, rotationDeg: 0 };
-    state.pickP1 = null;
-    state.pickP2 = null;
+    clearInteractiveDraft();
     rebuildCompiledTimeline();
     state.playing = false;
     state.playPos = 0;
@@ -233,13 +276,13 @@ export function initOrigamiStudio() {
     if (state.mode !== 'free') return;
     state.freeSteps.splice(idx, 1);
     state.freeRedo = [];
+    clearInteractiveDraft();
     rebuildCompiledTimeline();
     state.playPos = Math.min(state.playPos, state.freeSteps.length);
     state.playing = false;
     syncUI();
   }
 
-  // One-click classic fold macros for Free Studio
   function applyQuickMacro(macroId) {
     const scope = state.freeLayerScope;
     const macros = {
@@ -267,6 +310,7 @@ export function initOrigamiStudio() {
       rot90: { type: 'rotate', angleDeg: 90, label: '90° 회전', technique: '회전' },
       rot45: { type: 'rotate', angleDeg: 45, label: '45° 회전', technique: '회전' },
     };
+    if (isMobileViewport()) closeSheet();
     if (macroId === 'accordion') {
       addFreeStep({ type: 'pleat', p1: [-0.45, -1], p2: [-0.45, 1], side: -1, offset: 0.25, angleDeg: 155, layerScope: scope, label: '아코디언 1단 주름', technique: '계단 접기' });
       addFreeStep({ type: 'pleat', p1: [0.15, -1], p2: [0.15, 1], side: -1, offset: 0.25, angleDeg: 155, layerScope: scope, label: '아코디언 2단 주름', technique: '계단 접기' });
@@ -281,11 +325,7 @@ export function initOrigamiStudio() {
     if (step) addFreeStep(step);
   }
 
-  // ---- Canvas Pointer / Orbit / Free-Fold Interaction ----
-  let dragging = false;
-  let dragMoved = false;
-  let dragStartX = 0, dragStartY = 0;
-  let dragLastX = 0, dragLastY = 0;
+  // ---- Geometry Hit-Test & Direct Drag-to-Fold Helpers ----
   let lastCam = null;
 
   function getCanvasCoords(e) {
@@ -293,10 +333,11 @@ export function initOrigamiStudio() {
     return { x: e.clientX - rect.left, y: e.clientY - rect.top, w: rect.width, h: rect.height };
   }
 
-  function findNearestSnap(sx, sy, w, h) {
+  function findNearestSnap(sx, sy, w, h, radiusPx = 28, excludePt = null) {
     if (!lastCam || state.snapPoints.length === 0) return null;
-    let best = null, bestDist = 20;
+    let best = null, bestDist = radiusPx;
     for (const sp of state.snapPoints) {
+      if (excludePt && Math.hypot(sp.x - excludePt.x, sp.y - excludePt.y) < 0.08) continue;
       const pr = projectPoint(worldToCamera(sp, lastCam), w, h);
       const d = Math.hypot(pr.x - sx, pr.y - sy);
       if (d < bestDist) {
@@ -307,68 +348,225 @@ export function initOrigamiStudio() {
     return best;
   }
 
+  function pointInPoly2D(px, py, pts) {
+    let inside = false;
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      const xi = pts[i].x, yi = pts[i].y, xj = pts[j].x, yj = pts[j].y;
+      if (((yi > py) !== (yj > py)) && (px < ((xj - xi) * (py - yi)) / (yj - yi + 1e-12) + xi)) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  }
+
+  function isPointOnPaper(worldPt) {
+    if (!worldPt || !state.compiledPlanar) return false;
+    for (const f of state.compiledPlanar.finalState.faces) {
+      if (pointInPoly2D(worldPt.x, worldPt.y, f.pts)) return true;
+    }
+    return false;
+  }
+
+  function updateDirectDragFold(sx, sy, w, h) {
+    if (!state.dragStart || !lastCam || !state.compiledPlanar) return;
+    const snapRadius = isMobileViewport() ? 36 : 26;
+    const snapTarget = findNearestSnap(sx, sy, w, h, snapRadius, state.dragStart);
+    const raw = screenToPlane(sx, sy, w, h, lastCam, v3(0, 0, 0), v3(0, 0, 1));
+    const cur = snapTarget ? v3(snapTarget.x, snapTarget.y, 0) : (raw ? v3(raw.x, raw.y, 0) : state.dragStart);
+
+    state.dragCurrent = cur;
+    state.dragSnapLabel = snapTarget
+      ? (snapTarget.kind === 'vertex' ? '꼭짓점 맞춤' : snapTarget.kind === 'center' ? '중심 맞춤' : '변 중점 맞춤')
+      : '';
+
+    const dx = cur.x - state.dragStart.x;
+    const dy = cur.y - state.dragStart.y;
+    const dLen = Math.hypot(dx, dy);
+
+    if (dLen < 0.14) {
+      state.dragCrease = null;
+      state.dragLiveStep = null;
+      state.dragLiveCompiled = null;
+      state.dragLiveT = 0;
+      return;
+    }
+
+    // Huzita-Hatori Axiom 2: exact perpendicular bisector bringing dragStart onto cur!
+    const mid = v3((state.dragStart.x + cur.x) * 0.5, (state.dragStart.y + cur.y) * 0.5, 0);
+    const dir = norm(v3(-dy, dx, 0));
+    const p1 = v3(mid.x - dir.x * 1.45, mid.y - dir.y * 1.45, 0);
+    const p2 = v3(mid.x + dir.x * 1.45, mid.y + dir.y * 1.45, 0);
+    const leftNormal = norm(cross(v3(0, 0, 1), dir));
+    const side = dot(sub(state.dragStart, mid), leftNormal) >= 0 ? 1 : -1;
+
+    const toolNames = {
+      valley: '계곡 접기',
+      mountain: '산 접기',
+      precrease: '접었다 펴기',
+      pleat: '계단 접기',
+    };
+    const labelSuffix = state.dragSnapLabel ? ` · ${state.dragSnapLabel}` : '';
+    const liveStep = {
+      type: state.freeTool,
+      p1: [p1.x, p1.y],
+      p2: [p2.x, p2.y],
+      side,
+      angleDeg: state.freeAngle,
+      layerScope: state.freeLayerScope,
+      offset: state.freePleatOffset,
+      label: `${toolNames[state.freeTool]}${labelSuffix}`,
+      technique: toolNames[state.freeTool],
+    };
+
+    state.dragCrease = { p1, p2 };
+    state.dragLiveStep = liveStep;
+    state.dragLiveCompiled = compilePlanarStep(state.compiledPlanar.finalState, liveStep);
+    // Real-time 3D preview angle follows drag distance & snaps close to finished when locked on target!
+    state.dragLiveT = snapTarget ? 0.88 : Math.min(0.84, 0.25 + (dLen / 1.55) * 0.62);
+  }
+
   function computeFreePreviewFaces() {
     if (!state.pickP1 || !state.pickP2 || state.hoverSide === 0 || !state.compiledPlanar) return [];
     const dir = norm(sub(state.pickP2, state.pickP1));
     const nrm = norm(cross(v3(0, 0, 1), dir));
     const out = [];
     for (const f of state.compiledPlanar.finalState.faces) {
-      let hasMoving = false;
       for (const p of f.pts) {
         if (dot(sub(p, state.pickP1), nrm) * state.hoverSide > 0.02) {
-          hasMoving = true;
+          out.push(f);
           break;
         }
       }
-      if (hasMoving) out.push(f);
     }
     return out;
   }
 
+  // ---- Multi-Touch Pointer & Gesture System ----
+  const activePointers = new Map(); // pointerId -> { x, y }
+  let gestureMode = 'none'; // 'none' | 'orbit' | 'drag-fold' | 'pinch'
+  let dragMoved = false;
+  let dragStartX = 0, dragStartY = 0;
+  let dragLastX = 0, dragLastY = 0;
+  let pinchStartDist = 0, pinchStartCamDist = 4.6, pinchMidX = 0, pinchMidY = 0;
+
   canvas.addEventListener('pointerdown', (e) => {
     canvas.setPointerCapture(e.pointerId);
-    dragging = true;
-    dragMoved = false;
-    dragStartX = dragLastX = e.clientX;
-    dragStartY = dragLastY = e.clientY;
+    const { x, y, w, h } = getCanvasCoords(e);
+    activePointers.set(e.pointerId, { x, y });
     state.targetCamera = null;
+
     if (e.button === 2 && state.mode === 'free') {
-      state.pickP1 = null;
-      state.pickP2 = null;
-      state.hoverSide = 0;
+      clearInteractiveDraft();
       updateFreeBanner();
+      return;
     }
+
+    // Two-finger gesture -> Pinch-to-Zoom + 2-Finger Orbit!
+    if (activePointers.size === 2) {
+      clearInteractiveDraft();
+      const pts = Array.from(activePointers.values());
+      pinchStartDist = Math.max(10, Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y));
+      pinchStartCamDist = state.camera.distance;
+      pinchMidX = (pts[0].x + pts[1].x) * 0.5;
+      pinchMidY = (pts[0].y + pts[1].y) * 0.5;
+      gestureMode = 'pinch';
+      return;
+    }
+
+    if (activePointers.size > 2) return;
+
+    dragMoved = false;
+    dragStartX = dragLastX = x;
+    dragStartY = dragLastY = y;
+
+    // Decide 1-finger gesture: Direct Drag-to-Fold vs Orbit!
+    const inDirectDrag = state.mode === 'free' && state.freeInteractMode === 'drag' && lastCam;
+    if (inDirectDrag) {
+      // Jump to latest folded state if user paused earlier
+      if (state.playPos < state.freeSteps.length) {
+        state.playPos = state.freeSteps.length;
+        state.playing = false;
+        syncPlaybackControls();
+      }
+      const grabRadius = isMobileViewport() ? 42 : 30;
+      const snap = findNearestSnap(x, y, w, h, grabRadius);
+      const raw = screenToPlane(x, y, w, h, lastCam, v3(0, 0, 0), v3(0, 0, 1));
+      const onPaper = snap || isPointOnPaper(raw);
+
+      if (onPaper) {
+        const startPt = snap ? v3(snap.x, snap.y, 0) : v3(raw.x, raw.y, 0);
+        gestureMode = 'drag-fold';
+        state.dragFoldActive = true;
+        state.dragStart = startPt;
+        state.dragCurrent = startPt;
+        state.dragSnapLabel = '';
+        state.dragCrease = null;
+        state.dragLiveStep = null;
+        state.dragLiveCompiled = null;
+        updateFreeBanner();
+        return;
+      }
+    }
+
+    // Touching empty background OR Library Mode OR Orbit/Line Mode -> Orbit camera on drag!
+    gestureMode = 'orbit';
   });
 
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
   canvas.addEventListener('pointermove', (e) => {
     const { x, y, w, h } = getCanvasCoords(e);
+    if (activePointers.has(e.pointerId)) {
+      activePointers.set(e.pointerId, { x, y });
+    }
 
-    if (dragging) {
-      const dx = e.clientX - dragLastX;
-      const dy = e.clientY - dragLastY;
-      if (Math.hypot(e.clientX - dragStartX, e.clientY - dragStartY) > 5) {
-        dragMoved = true;
-      }
+    // 1. Two-finger pinch zoom & orbit
+    if (gestureMode === 'pinch' && activePointers.size >= 2) {
+      const pts = Array.from(activePointers.values());
+      const curDist = Math.max(10, Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y));
+      const ratio = pinchStartDist / curDist;
+      state.camera.distance = Math.max(2.5, Math.min(8.4, pinchStartCamDist * ratio));
+      const midX = (pts[0].x + pts[1].x) * 0.5;
+      const midY = (pts[0].y + pts[1].y) * 0.5;
+      state.camera.yaw -= (midX - pinchMidX) * 0.008;
+      state.camera.pitch = Math.max(-1.42, Math.min(1.42, state.camera.pitch + (midY - pinchMidY) * 0.008));
+      pinchMidX = midX;
+      pinchMidY = midY;
+      state.autoOrbit = false;
+      return;
+    }
+
+    // 2. Direct Drag-to-Fold live 3D folding!
+    if (gestureMode === 'drag-fold' && state.dragFoldActive) {
+      if (Math.hypot(x - dragStartX, y - dragStartY) > 6) dragMoved = true;
+      updateDirectDragFold(x, y, w, h);
+      updateFreeBanner();
+      return;
+    }
+
+    // 3. Camera Orbit drag
+    if (gestureMode === 'orbit' && activePointers.size === 1) {
+      const dx = x - dragLastX;
+      const dy = y - dragLastY;
+      if (Math.hypot(x - dragStartX, y - dragStartY) > 6) dragMoved = true;
       if (dragMoved) {
         state.camera.yaw -= dx * 0.0085;
         state.camera.pitch = Math.max(-1.42, Math.min(1.42, state.camera.pitch + dy * 0.0085));
         state.autoOrbit = false;
       }
-      dragLastX = e.clientX;
-      dragLastY = e.clientY;
+      dragLastX = x;
+      dragLastY = y;
       return;
     }
 
-    // Hover feedback for Free Fold Studio when at the end of timeline
-    if (state.mode === 'free' && !state.playing && lastCam) {
+    // 4. Desktop hover feedback when idle in Free Studio
+    if (activePointers.size === 0 && state.mode === 'free' && !state.playing && lastCam) {
       const worldPt = screenToPlane(x, y, w, h, lastCam, v3(0, 0, 0), v3(0, 0, 1));
-      const snap = findNearestSnap(x, y, w, h);
+      const snap = findNearestSnap(x, y, w, h, 26);
       state.hoveredSnap = snap;
       state.hoverWorld = snap ? v3(snap.x, snap.y, 0) : (worldPt ? v3(worldPt.x, worldPt.y, 0) : null);
 
-      if (state.pickP1 && state.pickP2 && state.hoverWorld) {
+      if (state.freeInteractMode === 'line' && state.pickP1 && state.pickP2 && state.hoverWorld) {
         const dir = norm(sub(state.pickP2, state.pickP1));
         const nrm = norm(cross(v3(0, 0, 1), dir));
         const d = dot(sub(state.hoverWorld, state.pickP1), nrm);
@@ -379,19 +577,37 @@ export function initOrigamiStudio() {
     }
   });
 
-  canvas.addEventListener('pointerup', (e) => {
-    const wasClick = dragging && !dragMoved && e.button === 0;
-    dragging = false;
-    if (!wasClick || state.mode !== 'free' || !lastCam) return;
+  function handlePointerRelease(e) {
+    const { x, y, w, h } = getCanvasCoords(e);
+    activePointers.delete(e.pointerId);
 
-    // Ensure we are at the latest state before adding a fold
+    // Finish Direct Drag-to-Fold!
+    if (gestureMode === 'drag-fold') {
+      const stepToCommit = state.dragLiveStep;
+      const startT = state.dragLiveT;
+      gestureMode = 'none';
+      if (stepToCommit && dragMoved) {
+        // Commit the fold and finish animating smoothly from current live angle to 1.0!
+        addFreeStep(stepToCommit, Math.min(0.85, startT));
+      } else {
+        clearInteractiveDraft();
+        updateFreeBanner();
+      }
+      return;
+    }
+
+    // Tap in Precision Line-Fold Mode
+    const wasTap = gestureMode === 'orbit' && !dragMoved && (e.button === 0 || e.pointerType === 'touch');
+    if (activePointers.size === 0) gestureMode = 'none';
+
+    if (!wasTap || state.mode !== 'free' || state.freeInteractMode !== 'line' || !lastCam) return;
+
     if (state.playPos < state.freeSteps.length) {
       state.playPos = state.freeSteps.length;
       state.playing = false;
     }
 
-    const { x, y, w, h } = getCanvasCoords(e);
-    const snap = findNearestSnap(x, y, w, h);
+    const snap = findNearestSnap(x, y, w, h, isMobileViewport() ? 36 : 24);
     const raw = screenToPlane(x, y, w, h, lastCam, v3(0, 0, 0), v3(0, 0, 1));
     const pt = snap ? v3(snap.x, snap.y, 0) : (raw ? v3(raw.x, raw.y, 0) : null);
     if (!pt) return;
@@ -405,18 +621,12 @@ export function initOrigamiStudio() {
       state.pickP2 = pt;
       updateFreeBanner();
     } else {
-      // Step 3: click side to execute fold!
       const dir = norm(sub(state.pickP2, state.pickP1));
       const nrm = norm(cross(v3(0, 0, 1), dir));
       const d = dot(sub(pt, state.pickP1), nrm);
       if (Math.abs(d) < 0.03) return;
       const side = d > 0 ? 1 : -1;
-      const toolNames = {
-        valley: '계곡 접기',
-        mountain: '산 접기',
-        precrease: '접었다 펴기',
-        pleat: '계단 접기',
-      };
+      const toolNames = { valley: '계곡 접기', mountain: '산 접기', precrease: '접었다 펴기', pleat: '계단 접기' };
       addFreeStep({
         type: state.freeTool,
         p1: [state.pickP1.x, state.pickP1.y],
@@ -429,20 +639,28 @@ export function initOrigamiStudio() {
         technique: toolNames[state.freeTool],
       });
     }
+  }
+
+  canvas.addEventListener('pointerup', handlePointerRelease);
+  canvas.addEventListener('pointercancel', (e) => {
+    activePointers.delete(e.pointerId);
+    if (activePointers.size === 0) {
+      gestureMode = 'none';
+      clearInteractiveDraft();
+      updateFreeBanner();
+    }
   });
 
   canvas.addEventListener('wheel', (e) => {
     e.preventDefault();
     state.targetCamera = null;
-    state.camera.distance = Math.max(2.6, Math.min(8.2, state.camera.distance * (1 + e.deltaY * 0.001)));
+    state.camera.distance = Math.max(2.5, Math.min(8.4, state.camera.distance * (1 + e.deltaY * 0.001)));
   }, { passive: false });
 
   window.addEventListener('keydown', (e) => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
     if (e.key === 'Escape' && state.mode === 'free') {
-      state.pickP1 = null;
-      state.pickP2 = null;
-      state.hoverSide = 0;
+      clearInteractiveDraft();
       updateFreeBanner();
     } else if (e.code === 'Space') {
       e.preventDefault();
@@ -537,7 +755,7 @@ export function initOrigamiStudio() {
     list.innerHTML = '';
 
     if (model.steps.length === 0) {
-      list.innerHTML = '<div class="empty-steps">캔버스에서 두 점을 클릭해 첫 번째 접기를 시작하거나, 왼쪽의 빠른 기법 버튼을 눌러보세요.</div>';
+      list.innerHTML = '<div class="empty-steps">종이 모서리를 끌어 다른 모서리·중심에 맞춰 첫 접기를 해보세요!</div>';
       return;
     }
 
@@ -572,12 +790,20 @@ export function initOrigamiStudio() {
     }
     banner.style.display = 'flex';
     const textEl = $('free-guide-text');
-    if (!state.pickP1) {
-      textEl.textContent = '1/3 · 종이 위 시작점(꼭짓점·중점)을 클릭하세요 (드래그하면 3D 회전)';
-    } else if (!state.pickP2) {
-      textEl.textContent = '2/3 · 접기 선의 끝점을 클릭하세요 (Esc / 우클릭 취소)';
+    if (state.freeInteractMode === 'drag') {
+      if (state.dragFoldActive) {
+        textEl.textContent = state.dragSnapLabel
+          ? `손을 떼면 접기 완료! (${state.dragSnapLabel})`
+          : '원하는 지점까지 끌어당긴 뒤 손을 떼세요';
+      } else {
+        textEl.textContent = '모서리를 끌어 다른 점에 맞춰 접기 · 바깥 드래그로 3D 회전';
+      }
+    } else if (state.freeInteractMode === 'orbit') {
+      textEl.textContent = '3D 회전 모드 · 화면을 드래그해 회전, 두 손가락으로 확대/축소';
     } else {
-      textEl.textContent = '3/3 · 접어 올릴 영역(파란/빨간 하이라이트)을 클릭해 실행하세요';
+      if (!state.pickP1) textEl.textContent = '1/3 · 접기 선의 시작점을 탭하세요';
+      else if (!state.pickP2) textEl.textContent = '2/3 · 접기 선의 끝점을 탭하세요';
+      else textEl.textContent = '3/3 · 접어 올릴 영역을 탭해 실행하세요';
     }
   }
 
@@ -592,21 +818,35 @@ export function initOrigamiStudio() {
     $('btn-play').innerHTML = state.playing
       ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg> 일시정지'
       : '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="6,4 20,12 6,20"/></svg> 전체 재생';
+    $('mob-play').textContent = state.playing ? '⏸ 정지' : '▶ 재생';
 
     const curIdx = total > 0 ? Math.min(total - 1, Math.floor(state.playPos)) : -1;
     const stepObj = curIdx >= 0 ? model.steps[curIdx] : null;
     $('hud-step-counter').textContent = total > 0 ? `STEP ${curIdx + 1} / ${total}` : 'STEP 0 / 0';
     $('hud-step-title').textContent = stepObj ? (stepObj.label || stepObj.technique) : '새 정사각형 종이';
     $('hud-step-desc').textContent = stepObj?.desc || (state.mode === 'free'
-      ? '자유롭게 접기 기법을 적용해 나만의 3D 작품을 만들고 과정 전체를 GIF로 내보내세요.'
+      ? '모서리를 끌어 바로 3D로 접고, 완성된 전 과정을 GIF로 내보내세요.'
       : model.summary);
 
-    // Highlight active step pill without full DOM rebuild during smooth play
     const pills = $('step-pills').children;
     for (let i = 0; i < pills.length; i++) {
       pills[i].classList.toggle('active', i === curIdx);
       pills[i].classList.toggle('done', i < curIdx);
     }
+  }
+
+  function syncMobileBar() {
+    $('mob-bar-library').style.display = state.mode === 'library' ? 'flex' : 'none';
+    $('mob-bar-free').style.display = state.mode === 'free' ? 'flex' : 'none';
+
+    const interactLabels = { drag: '✋ 끌어접기', line: '✂️ 선긋기', orbit: '🔄 3D회전' };
+    $('mob-interact-toggle').textContent = interactLabels[state.freeInteractMode];
+
+    const isMountain = state.freeTool === 'mountain';
+    const dirBtn = $('mob-fold-dir');
+    dirBtn.textContent = isMountain ? '산 ▼' : '계곡 ▲';
+    dirBtn.classList.toggle('mountain', isMountain);
+    $('mob-undo').disabled = state.freeSteps.length === 0;
   }
 
   function syncUI() {
@@ -619,7 +859,6 @@ export function initOrigamiStudio() {
     $('work-title-badge').textContent = model.name;
     $('work-subtitle').textContent = model.enName || '';
 
-    // Info card in library mode
     const infoCard = $('library-info-card');
     if (state.mode === 'library') {
       const canBranch = typeof model.evaluate !== 'function';
@@ -631,13 +870,12 @@ export function initOrigamiStudio() {
         <p class="info-summary">${model.summary || ''}</p>
         ${model.symbol ? `<div class="info-meta"><b>기호:</b> ${model.symbol}</div>` : ''}
         ${model.usage ? `<div class="info-meta"><b>활용:</b> ${model.usage}</div>` : ''}
-        ${canBranch ? `<button id="btn-branch-free" class="btn-secondary full-w" style="margin-top:8px;">이 작품 자유 스튜디오에서 이어 접기</button>` : ''}
+        ${canBranch ? `<button id="btn-branch-free" class="btn-secondary full-w" style="margin-top:8px;">이 작품 직접 접기에서 이어하기</button>` : ''}
       `;
       const branchBtn = $('btn-branch-free');
       if (branchBtn) branchBtn.addEventListener('click', branchCurrentToFreeStudio);
     }
 
-    // Free studio input sync
     if (state.mode === 'free') {
       $('free-title-input').value = state.freeTitle;
       $('btn-undo').disabled = state.freeSteps.length === 0;
@@ -646,6 +884,9 @@ export function initOrigamiStudio() {
       document.querySelectorAll('[data-tool]').forEach(b => {
         b.classList.toggle('active', b.dataset.tool === state.freeTool);
       });
+      document.querySelectorAll('[data-interact]').forEach(b => {
+        b.classList.toggle('active', b.dataset.interact === state.freeInteractMode);
+      });
     }
 
     $('cp-overlay').style.display = state.showCP ? 'block' : 'none';
@@ -653,6 +894,7 @@ export function initOrigamiStudio() {
     renderTimelineSteps();
     updateFreeBanner();
     syncPlaybackControls();
+    syncMobileBar();
   }
 
   // ---- Main Animation & Render Loop ----
@@ -671,10 +913,22 @@ export function initOrigamiStudio() {
 
   function renderAll() {
     const { w, h } = resizeCanvas();
-    const frame = evaluateAtPos(state.playPos);
 
-    const freeOverlay = (state.mode === 'free' && !state.playing && state.playPos >= state.freeSteps.length - 0.01)
+    // If user is actively Drag-to-Folding, render the LIVE 3D folding mesh directly!
+    let frame;
+    if (state.dragFoldActive && state.dragLiveCompiled) {
+      frame = state.dragLiveCompiled.evaluate(state.dragLiveT);
+    } else {
+      frame = evaluateAtPos(state.playPos);
+    }
+
+    const showFreeOverlay = state.mode === 'free'
+      && state.freeInteractMode !== 'orbit'
+      && (state.dragFoldActive || (!state.playing && state.playPos >= state.freeSteps.length - 0.01));
+
+    const freeOverlay = showFreeOverlay
       ? {
+          interactMode: state.freeInteractMode,
           snapPoints: state.snapPoints,
           hoveredSnap: state.hoveredSnap,
           p1: state.pickP1,
@@ -683,24 +937,28 @@ export function initOrigamiStudio() {
           foldType: state.freeTool === 'mountain' ? 'mountain' : 'valley',
           hoverSide: state.hoverSide,
           previewFaces: computeFreePreviewFaces(),
+          dragStart: state.dragStart,
+          dragCurrent: state.dragCurrent,
+          dragSnapLabel: state.dragSnapLabel,
+          dragCrease: state.dragCrease,
         }
       : null;
 
     const totalSteps = getActiveModel().steps.length;
-    const isFinishedFinal = totalSteps > 0 && state.playPos >= totalSteps - 0.005;
+    const isFinishedFinal = totalSteps > 0 && state.playPos >= totalSteps - 0.005 && !state.dragFoldActive;
 
     lastCam = renderOrigami3D(ctx, w, h, frame, {
       camera: state.camera,
       frontColor: state.frontColor,
       backColor: state.backColor,
       isDark: state.isDark,
-      showGuides: state.showGuides && !isFinishedFinal,
+      showGuides: state.showGuides && !isFinishedFinal && !state.dragFoldActive,
       showWireframe: state.showWireframe,
       showShadow: true,
       freeOverlay,
     });
 
-    if (state.showCP) {
+    if (state.showCP && !isMobileViewport()) {
       renderCreasePattern2D(cpCtx, cpCanvas.width, frame.creases, state.isDark);
     }
   }
@@ -710,7 +968,6 @@ export function initOrigamiStudio() {
     const dt = Math.min(0.05, (now - lastTime) / 1000);
     lastTime = now;
 
-    // Smooth camera preset transition
     if (state.targetCamera) {
       const k = Math.min(1, dt * 8);
       state.camera.yaw += (state.targetCamera.yaw - state.camera.yaw) * k;
@@ -730,15 +987,13 @@ export function initOrigamiStudio() {
       state.camera.yaw += dt * 0.48;
     }
 
-    // Timeline playback advancement
     const total = getActiveModel().steps.length;
     if (state.playing && total > 0) {
       if (state.stepHoldTimer > 0) {
         state.stepHoldTimer -= dt;
       } else {
         const prevStep = Math.floor(state.playPos);
-        const stepSpeed = 0.78 * state.playbackSpeed;
-        state.playPos += dt * stepSpeed;
+        state.playPos += dt * 0.78 * state.playbackSpeed;
         const nextStep = Math.floor(state.playPos);
         if (state.playPos >= total) {
           state.playPos = total;
@@ -757,6 +1012,7 @@ export function initOrigamiStudio() {
 
   // ---- FULL-PROCESS GIF EXPORT STUDIO ----
   function openGifModal() {
+    closeSheet();
     const model = getActiveModel();
     $('gif-modal').classList.add('open');
     $('gif-work-name').textContent = `${model.name} (${model.steps.length}단계 전체 과정)`;
@@ -767,9 +1023,7 @@ export function initOrigamiStudio() {
   }
 
   function closeGifModal() {
-    if (state.gifBusy) {
-      state.gifCancel = true;
-    }
+    if (state.gifBusy) state.gifCancel = true;
     $('gif-modal').classList.remove('open');
   }
 
@@ -793,7 +1047,6 @@ export function initOrigamiStudio() {
     $('gif-progress-bar').style.width = '0%';
     $('gif-progress-text').textContent = '프레임 시퀀스 준비 중...';
 
-    // Build exact frame schedule covering the ENTIRE folding process (Step 0 -> Step N + Finale)
     const frameDelayMs = Math.round(1000 / fps);
     const framesPerStep = Math.max(8, Math.round(fps * stepDurationSec));
     const holdFrames = Math.max(3, Math.round(fps * 0.32));
@@ -805,22 +1058,15 @@ export function initOrigamiStudio() {
     const basePitch = state.camera.pitch;
     const baseDist = state.camera.distance;
 
-    // Intro hold on flat square paper
     for (let i = 0; i < introHold; i++) {
       schedule.push({
-        pos: 0,
-        yaw: baseYaw,
-        pitch: basePitch,
-        dist: baseDist,
-        delay: frameDelayMs,
+        pos: 0, yaw: baseYaw, pitch: basePitch, dist: baseDist, delay: frameDelayMs,
         stepNum: totalSteps > 0 ? 1 : 0,
         label: totalSteps > 0 ? '시작 · 정사각형 색종이' : model.name,
-        technique: '준비',
-        progress: 0,
+        technique: '준비', progress: 0,
       });
     }
 
-    // Every single folding step animated smoothly 0 -> 1 + brief hold
     const totalAnimSteps = Math.max(1, totalSteps);
     for (let s = 0; s < totalSteps; s++) {
       const stepMeta = model.steps[s];
@@ -832,46 +1078,31 @@ export function initOrigamiStudio() {
           pos: s + localT * 0.9999,
           yaw: baseYaw + orbitOffset,
           pitch: basePitch + (camMode === 'orbit-spin' ? Math.sin(globalFrac * Math.PI) * 0.08 : 0),
-          dist: baseDist,
-          delay: frameDelayMs,
-          stepNum: s + 1,
+          dist: baseDist, delay: frameDelayMs, stepNum: s + 1,
           label: stepMeta.label || stepMeta.technique || `단계 ${s + 1}`,
-          technique: stepMeta.technique || '',
-          progress: globalFrac,
+          technique: stepMeta.technique || '', progress: globalFrac,
         });
       }
-      // Crisp hold frame at completion of each step
       schedule.push({
         pos: s + 0.9999,
         yaw: baseYaw + (camMode === 'orbit-spin' ? Math.sin(((s + 1) / totalAnimSteps) * Math.PI * 2) * 0.34 : 0),
-        pitch: basePitch,
-        dist: baseDist,
-        delay: Math.round(frameDelayMs * holdFrames),
-        stepNum: s + 1,
+        pitch: basePitch, dist: baseDist, delay: Math.round(frameDelayMs * holdFrames), stepNum: s + 1,
         label: stepMeta.label || stepMeta.technique || `단계 ${s + 1}`,
-        technique: stepMeta.technique || '',
-        progress: (s + 1) / totalAnimSteps,
+        technique: stepMeta.technique || '', progress: (s + 1) / totalAnimSteps,
       });
     }
 
-    // Finale: 360-degree 3D turntable showcase (or steady hold)
     for (let f = 0; f < spinFrames; f++) {
       const frac = f / Math.max(1, spinFrames - 1);
-      const spinYaw = includeSpin ? baseYaw + frac * Math.PI * 2 : baseYaw;
       schedule.push({
         pos: totalSteps,
-        yaw: spinYaw,
+        yaw: includeSpin ? baseYaw + frac * Math.PI * 2 : baseYaw,
         pitch: basePitch + (includeSpin ? Math.sin(frac * Math.PI) * 0.14 : 0),
-        dist: baseDist * (includeSpin ? 0.96 : 1.0),
-        delay: frameDelayMs,
-        stepNum: totalSteps,
-        label: `${model.name} 완성!`,
-        technique: '완성',
-        progress: 1.0,
+        dist: baseDist * (includeSpin ? 0.96 : 1.0), delay: frameDelayMs,
+        stepNum: totalSteps, label: `${model.name} 완성!`, technique: '완성', progress: 1.0,
       });
     }
 
-    // Offscreen canvas for deterministic crisp GIF rendering
     const offCanvas = document.createElement('canvas');
     offCanvas.width = gw;
     offCanvas.height = gh;
@@ -891,50 +1122,29 @@ export function initOrigamiStudio() {
       const frameData = evaluateAtPos(item.pos);
       renderOrigami3D(offCtx, gw, gh, frameData, {
         camera: { yaw: item.yaw, pitch: item.pitch, distance: item.dist, target: v3(0, 0, 0) },
-        frontColor: state.frontColor,
-        backColor: state.backColor,
-        isDark: state.isDark,
+        frontColor: state.frontColor, backColor: state.backColor, isDark: state.isDark,
         showGuides: state.showGuides && item.progress < 1.0,
-        showWireframe: state.showWireframe,
-        showShadow: true,
+        showWireframe: state.showWireframe, showShadow: true,
         hudOverlay: includeHud
-          ? {
-              title: model.name,
-              stepLabel: item.label,
-              technique: item.technique,
-              stepNum: item.stepNum,
-              totalSteps,
-              progress: item.progress,
-            }
+          ? { title: model.name, stepLabel: item.label, technique: item.technique, stepNum: item.stepNum, totalSteps, progress: item.progress }
           : null,
       });
 
-      const imgData = offCtx.getImageData(0, 0, gw, gh);
-      encoder.addFrame(imgData.data, item.delay);
+      encoder.addFrame(offCtx.getImageData(0, 0, gw, gh).data, item.delay);
 
       const pct = Math.round(((i + 1) / totalFrames) * 100);
       $('gif-progress-bar').style.width = `${pct}%`;
       $('gif-progress-text').textContent = `GIF 인코딩 중... ${i + 1} / ${totalFrames} 프레임 (${pct}%)`;
-
-      // Yield periodically to keep browser UI smooth
-      if (i % 3 === 0) {
-        await new Promise(r => setTimeout(r, 0));
-      }
+      if (i % 3 === 0) await new Promise(r => setTimeout(r, 0));
     }
 
     const bytes = encoder.finish();
     if (state.gifBlobUrl) URL.revokeObjectURL(state.gifBlobUrl);
-    const blob = new Blob([bytes], { type: 'image/gif' });
-    state.gifBlobUrl = URL.createObjectURL(blob);
-
-    const safeSlug = (model.enName || model.id || 'origami').toLowerCase().replace(/[^a-z0-9]+/g, '-');
-    state.gifFileName = `${safeSlug}-3d-process.gif`;
-
-    const sizeKB = (bytes.length / 1024).toFixed(1);
-    const totalDurSec = (schedule.reduce((a, b) => a + b.delay, 0) / 1000).toFixed(1);
+    state.gifBlobUrl = URL.createObjectURL(new Blob([bytes], { type: 'image/gif' }));
+    state.gifFileName = `${(model.enName || model.id || 'origami').toLowerCase().replace(/[^a-z0-9]+/g, '-')}-3d-process.gif`;
 
     $('gif-preview-img').src = state.gifBlobUrl;
-    $('gif-meta-info').textContent = `${gw}×${gh} · ${totalFrames}프레임 · ${totalDurSec}초 · ${sizeKB} KB`;
+    $('gif-meta-info').textContent = `${gw}×${gh} · ${totalFrames}프레임 · ${(schedule.reduce((a, b) => a + b.delay, 0) / 1000).toFixed(1)}초 · ${(bytes.length / 1024).toFixed(1)} KB`;
     $('gif-download-link').href = state.gifBlobUrl;
     $('gif-download-link').download = state.gifFileName;
     $('gif-progress-wrap').style.display = 'none';
@@ -944,98 +1154,71 @@ export function initOrigamiStudio() {
     state.gifBusy = false;
   }
 
-  // ---- Wire Up All Event Listeners ----
+  // ---- Wire Up Event Listeners ----
   $('tab-library').addEventListener('click', () => switchMode('library'));
   $('tab-free').addEventListener('click', () => switchMode('free'));
 
-  $('color-front').addEventListener('input', (e) => {
-    state.frontColor = e.target.value;
-    renderPaperSwatches();
+  // Mobile sheet drawer & quick thumb bar listeners
+  $('sheet-backdrop').addEventListener('click', closeSheet);
+  $('sheet-close-btn').addEventListener('click', closeSheet);
+  $('mob-open-library').addEventListener('click', openSheet);
+  $('mob-open-tools').addEventListener('click', openSheet);
+  $('mob-play').addEventListener('click', togglePlay);
+  $('mob-prev').addEventListener('click', () => jumpToStep(Math.max(0, Math.ceil(state.playPos) - 1)));
+  $('mob-next').addEventListener('click', () => jumpToStep(Math.min(getActiveModel().steps.length, Math.floor(state.playPos) + 1)));
+  $('mob-undo').addEventListener('click', undoFreeStep);
+  $('mob-flip').addEventListener('click', () => applyQuickMacro('flip'));
+  $('mob-interact-toggle').addEventListener('click', () => {
+    const order = ['drag', 'line', 'orbit'];
+    state.freeInteractMode = order[(order.indexOf(state.freeInteractMode) + 1) % order.length];
+    clearInteractiveDraft();
+    syncUI();
   });
-  $('color-back').addEventListener('input', (e) => {
-    state.backColor = e.target.value;
-    renderPaperSwatches();
+  $('mob-fold-dir').addEventListener('click', () => {
+    state.freeTool = state.freeTool === 'mountain' ? 'valley' : 'mountain';
+    clearInteractiveDraft();
+    syncUI();
   });
 
-  $('toggle-guides').addEventListener('click', (e) => {
-    state.showGuides = !state.showGuides;
-    e.currentTarget.classList.toggle('active', state.showGuides);
-  });
-  $('toggle-cp').addEventListener('click', (e) => {
-    state.showCP = !state.showCP;
-    e.currentTarget.classList.toggle('active', state.showCP);
-    $('cp-overlay').style.display = state.showCP ? 'block' : 'none';
-  });
-  $('toggle-wire').addEventListener('click', (e) => {
-    state.showWireframe = !state.showWireframe;
-    e.currentTarget.classList.toggle('active', state.showWireframe);
-  });
+  // View & color controls
+  $('color-front').addEventListener('input', (e) => { state.frontColor = e.target.value; renderPaperSwatches(); });
+  $('color-back').addEventListener('input', (e) => { state.backColor = e.target.value; renderPaperSwatches(); });
+  $('toggle-guides').addEventListener('click', (e) => { state.showGuides = !state.showGuides; e.currentTarget.classList.toggle('active', state.showGuides); });
+  $('toggle-cp').addEventListener('click', (e) => { state.showCP = !state.showCP; e.currentTarget.classList.toggle('active', state.showCP); $('cp-overlay').style.display = state.showCP ? 'block' : 'none'; });
+  $('toggle-wire').addEventListener('click', (e) => { state.showWireframe = !state.showWireframe; e.currentTarget.classList.toggle('active', state.showWireframe); });
 
   // Camera presets
-  $('cam-3d').addEventListener('click', () => {
-    state.autoOrbit = false;
-    state.targetCamera = { yaw: 0.52, pitch: 0.38, distance: 4.7, target: v3(0, 0, 0) };
-  });
-  $('cam-front').addEventListener('click', () => {
-    state.autoOrbit = false;
-    state.targetCamera = { yaw: 0.0, pitch: 0.02, distance: 4.5, target: v3(0, 0, 0) };
-  });
-  $('cam-side').addEventListener('click', () => {
-    state.autoOrbit = false;
-    state.targetCamera = { yaw: 1.48, pitch: 0.22, distance: 4.7, target: v3(0, 0, 0) };
-  });
-  $('cam-top').addEventListener('click', () => {
-    state.autoOrbit = false;
-    state.targetCamera = { yaw: 0.0, pitch: 1.32, distance: 4.8, target: v3(0, 0, 0) };
-  });
-  $('cam-spin').addEventListener('click', (e) => {
-    state.autoOrbit = !state.autoOrbit;
-    e.currentTarget.classList.toggle('active', state.autoOrbit);
-  });
+  $('cam-3d').addEventListener('click', () => { state.autoOrbit = false; state.targetCamera = { yaw: 0.52, pitch: 0.38, distance: 4.7, target: v3(0, 0, 0) }; });
+  $('cam-front').addEventListener('click', () => { state.autoOrbit = false; state.targetCamera = { yaw: 0.0, pitch: 0.02, distance: 4.4, target: v3(0, 0, 0) }; });
+  $('cam-side').addEventListener('click', () => { state.autoOrbit = false; state.targetCamera = { yaw: 1.48, pitch: 0.22, distance: 4.7, target: v3(0, 0, 0) }; });
+  $('cam-top').addEventListener('click', () => { state.autoOrbit = false; state.targetCamera = { yaw: 0.0, pitch: 1.32, distance: 4.8, target: v3(0, 0, 0) }; });
+  $('cam-spin').addEventListener('click', (e) => { state.autoOrbit = !state.autoOrbit; e.currentTarget.classList.toggle('active', state.autoOrbit); });
 
   // Playback controls
   $('btn-play').addEventListener('click', togglePlay);
-  $('btn-restart').addEventListener('click', () => {
-    state.playPos = 0;
-    state.playing = true;
-    state.stepHoldTimer = 0;
-    syncPlaybackControls();
-  });
-  $('btn-prev').addEventListener('click', () => {
-    const cur = Math.ceil(state.playPos) - 1;
-    jumpToStep(Math.max(0, cur));
-  });
-  $('btn-next').addEventListener('click', () => {
-    const total = getActiveModel().steps.length;
-    const cur = Math.floor(state.playPos) + 1;
-    jumpToStep(Math.min(total, cur));
-  });
-  $('timeline-slider').addEventListener('input', (e) => {
-    state.playing = false;
-    state.playPos = Number(e.target.value);
-    syncPlaybackControls();
-  });
-  $('speed-select').addEventListener('change', (e) => {
-    state.playbackSpeed = Number(e.target.value);
-  });
+  $('btn-restart').addEventListener('click', () => { state.playPos = 0; state.playing = true; state.stepHoldTimer = 0; syncPlaybackControls(); });
+  $('btn-prev').addEventListener('click', () => jumpToStep(Math.max(0, Math.ceil(state.playPos) - 1)));
+  $('btn-next').addEventListener('click', () => jumpToStep(Math.min(getActiveModel().steps.length, Math.floor(state.playPos) + 1)));
+  $('timeline-slider').addEventListener('input', (e) => { state.playing = false; state.playPos = Number(e.target.value); syncPlaybackControls(); });
+  $('speed-select').addEventListener('change', (e) => { state.playbackSpeed = Number(e.target.value); });
 
   // Free Fold Studio controls
-  $('free-title-input').addEventListener('input', (e) => {
-    state.freeTitle = e.target.value;
-    $('work-title-badge').textContent = state.freeTitle || '나의 3D 종이접기';
+  $('free-title-input').addEventListener('input', (e) => { state.freeTitle = e.target.value; $('work-title-badge').textContent = state.freeTitle || '나의 3D 종이접기'; });
+  document.querySelectorAll('[data-interact]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.freeInteractMode = btn.dataset.interact;
+      clearInteractiveDraft();
+      syncUI();
+    });
   });
   document.querySelectorAll('[data-tool]').forEach(btn => {
     btn.addEventListener('click', () => {
       state.freeTool = btn.dataset.tool;
-      state.pickP1 = null;
-      state.pickP2 = null;
+      clearInteractiveDraft();
       syncUI();
     });
   });
-  $('free-angle-slider').addEventListener('input', (e) => {
-    state.freeAngle = Number(e.target.value);
-    $('free-angle-val').textContent = `${state.freeAngle}°`;
-  });
+  $('free-angle-slider').addEventListener('input', (e) => { state.freeAngle = Number(e.target.value); $('free-angle-val').textContent = `${state.freeAngle}°`; });
   document.querySelectorAll('[data-angle]').forEach(btn => {
     btn.addEventListener('click', () => {
       state.freeAngle = Number(btn.dataset.angle);
@@ -1043,23 +1226,10 @@ export function initOrigamiStudio() {
       $('free-angle-val').textContent = `${state.freeAngle}°`;
     });
   });
-  $('free-pleat-offset').addEventListener('input', (e) => {
-    state.freePleatOffset = Number(e.target.value);
-    $('free-pleat-val').textContent = `${Math.round(state.freePleatOffset * 100)}%`;
-  });
-  $('layer-all').addEventListener('click', () => {
-    state.freeLayerScope = 'all';
-    $('layer-all').classList.add('active');
-    $('layer-top').classList.remove('active');
-  });
-  $('layer-top').addEventListener('click', () => {
-    state.freeLayerScope = 'top';
-    $('layer-top').classList.add('active');
-    $('layer-all').classList.remove('active');
-  });
-  document.querySelectorAll('[data-macro]').forEach(btn => {
-    btn.addEventListener('click', () => applyQuickMacro(btn.dataset.macro));
-  });
+  $('free-pleat-offset').addEventListener('input', (e) => { state.freePleatOffset = Number(e.target.value); $('free-pleat-val').textContent = `${Math.round(state.freePleatOffset * 100)}%`; });
+  $('layer-all').addEventListener('click', () => { state.freeLayerScope = 'all'; $('layer-all').classList.add('active'); $('layer-top').classList.remove('active'); });
+  $('layer-top').addEventListener('click', () => { state.freeLayerScope = 'top'; $('layer-top').classList.add('active'); $('layer-all').classList.remove('active'); });
+  document.querySelectorAll('[data-macro]').forEach(btn => btn.addEventListener('click', () => applyQuickMacro(btn.dataset.macro)));
   $('btn-undo').addEventListener('click', undoFreeStep);
   $('btn-redo').addEventListener('click', redoFreeStep);
   $('btn-reset').addEventListener('click', resetFreeStudio);
@@ -1067,9 +1237,7 @@ export function initOrigamiStudio() {
   // GIF Export Modal controls
   $('btn-open-gif').addEventListener('click', openGifModal);
   $('gif-close-btn').addEventListener('click', closeGifModal);
-  $('gif-modal').addEventListener('click', (e) => {
-    if (e.target === $('gif-modal')) closeGifModal();
-  });
+  $('gif-modal').addEventListener('click', (e) => { if (e.target === $('gif-modal')) closeGifModal(); });
   $('gif-start-btn').addEventListener('click', runFullProcessGifExport);
 
   document.querySelectorAll('[data-filter]').forEach(btn => {

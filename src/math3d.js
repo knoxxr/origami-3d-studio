@@ -252,7 +252,8 @@ export function worldToCamera(p, cam) {
 }
 
 export function projectPoint(camPt, width, height, fovDeg = 38) {
-  const f = (height * 0.5) / Math.tan((fovDeg * Math.PI) / 360);
+  const refDim = Math.min(width, height);
+  const f = (refDim * 0.5) / Math.tan((fovDeg * Math.PI) / 360);
   const z = Math.max(0.05, camPt.z);
   return {
     x: width * 0.5 + (camPt.x * f) / z,
@@ -266,7 +267,8 @@ export function projectPoint(camPt, width, height, fovDeg = 38) {
  * Unproject a screen pixel (sx, sy) onto a 3D plane (default z = 0).
  */
 export function screenToPlane(sx, sy, width, height, cam, planeOrigin = { x: 0, y: 0, z: 0 }, planeNormal = { x: 0, y: 0, z: 1 }, fovDeg = 38) {
-  const f = (height * 0.5) / Math.tan((fovDeg * Math.PI) / 360);
+  const refDim = Math.min(width, height);
+  const f = (refDim * 0.5) / Math.tan((fovDeg * Math.PI) / 360);
   const nx = (sx - width * 0.5) / f;
   const ny = (height * 0.5 - sy) / f;
   const rayDir = norm(add(add(scale(cam.right, nx), scale(cam.up, ny)), cam.forward));

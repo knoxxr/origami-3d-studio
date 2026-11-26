@@ -2,9 +2,9 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>종이공방 3D · 3D 종이접기 스튜디오 & GIF 내보내기</title>
-  <meta name="description" content="알려진 종이접기 기술을 3D로 구현하고, 직접 접은 작품의 전 과정을 애니메이션 GIF로 내보내는 3D 종이접기 스튜디오" />
+  <meta name="description" content="알려진 종이접기 기술 20종을 3D로 구현하고, 손가락 드래그로 직관적으로 접어 전 과정을 GIF로 내보내는 3D 종이접기 스튜디오" />
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
@@ -26,8 +26,8 @@
       </div>
 
       <nav class="mode-tabs" aria-label="스튜디오 모드">
-        <button id="tab-library" class="mode-tab active">작품 · 기법 라이브러리</button>
-        <button id="tab-free" class="mode-tab">자유 창작 스튜디오</button>
+        <button id="tab-library" class="mode-tab active">라이브러리</button>
+        <button id="tab-free" class="mode-tab">직접 접기</button>
       </nav>
 
       <div class="topbar-right">
@@ -42,15 +42,27 @@
             <polyline points="7 10 12 15 17 10"/>
             <line x1="12" y1="15" x2="12" y2="3"/>
           </svg>
-          GIF 내보내기
+          <span class="gif-btn-label">GIF 내보내기</span>
+          <span class="gif-btn-short">GIF</span>
         </button>
       </div>
     </header>
 
+    <!-- Mobile Bottom Sheet Backdrop -->
+    <div id="sheet-backdrop" class="sheet-backdrop" aria-hidden="true"></div>
+
     <!-- Main 3-Zone Workspace -->
     <main class="workspace">
-      <!-- Left Sidebar -->
-      <aside class="sidebar">
+      <!-- Left Sidebar (Desktop) / Slide-Up Bottom Sheet Drawer (Mobile) -->
+      <aside id="studio-sidebar" class="sidebar">
+        <div class="sheet-header">
+          <div class="sheet-handle"></div>
+          <div class="sheet-header-row">
+            <strong id="sheet-title">작품 · 종이접기 기술 (25종)</strong>
+            <button id="sheet-close-btn" class="sheet-close-btn" aria-label="패널 닫기">닫기 ✕</button>
+          </div>
+        </div>
+
         <!-- Mode 1: Library Panel -->
         <div id="panel-library" class="sidebar-scroll">
           <div id="library-info-card" class="info-card"></div>
@@ -87,8 +99,12 @@
         <!-- Mode 2: Free Fold Studio Panel -->
         <div id="panel-free" class="sidebar-scroll" style="display:none;">
           <div>
-            <div class="section-label"><span>작품 이름 (GIF 제목)</span></div>
-            <input id="free-title-input" type="text" class="text-input" value="나의 3D 종이접기" />
+            <div class="section-label"><span>조작 방식</span></div>
+            <div class="interact-seg">
+              <button class="interact-btn active" data-interact="drag">✋ 끌어 접기</button>
+              <button class="interact-btn" data-interact="line">✂️ 선 긋기</button>
+              <button class="interact-btn" data-interact="orbit">🔄 3D 회전</button>
+            </div>
           </div>
 
           <div>
@@ -156,6 +172,11 @@
             </div>
           </div>
 
+          <div>
+            <div class="section-label"><span>작품 이름 (GIF 제목)</span></div>
+            <input id="free-title-input" type="text" class="text-input" value="나의 3D 종이접기" />
+          </div>
+
           <div style="display:flex;gap:6px;">
             <button id="btn-undo" class="btn-secondary" style="flex:1;" disabled>실행 취소</button>
             <button id="btn-redo" class="btn-secondary" style="flex:1;" disabled>다시 실행</button>
@@ -198,16 +219,16 @@
             <div class="cam-bar" role="toolbar" aria-label="3D 카메라 시점">
               <button id="cam-3d" class="cam-btn">입체</button>
               <button id="cam-front" class="cam-btn">정면</button>
-              <button id="cam-side" class="cam-btn">측면</button>
-              <button id="cam-top" class="cam-btn">위</button>
+              <button id="cam-side" class="cam-btn cam-desktop-only">측면</button>
+              <button id="cam-top" class="cam-btn cam-desktop-only">위</button>
               <button id="cam-spin" class="cam-btn">회전</button>
             </div>
           </div>
 
-          <!-- Free Studio 3-Click Guide Banner -->
+          <!-- Free Studio Floating Guide Pill -->
           <div id="free-guide-banner" class="free-banner">
             <span class="free-dot"></span>
-            <span id="free-guide-text">1/3 · 시작점을 클릭하세요</span>
+            <span id="free-guide-text">모서리를 끌어 다른 점에 맞춰 접어보세요</span>
           </div>
 
           <!-- 2D Crease Pattern Mini Overlay -->
@@ -220,6 +241,26 @@
               </span>
             </div>
             <canvas id="cp-canvas" width="128" height="128"></canvas>
+          </div>
+        </div>
+
+        <!-- Mobile Quick Thumb Bar (visible on <= 768px) -->
+        <div id="mobile-action-bar" class="mobile-action-bar">
+          <!-- Library Quick Row -->
+          <div id="mob-bar-library" class="mob-bar-row">
+            <button id="mob-open-library" class="mob-pill-primary">📚 작품·기법 (25)</button>
+            <button id="mob-prev" class="mob-icon-btn" aria-label="이전 단계">◀</button>
+            <button id="mob-play" class="mob-pill-accent">재생</button>
+            <button id="mob-next" class="mob-icon-btn" aria-label="다음 단계">▶</button>
+          </div>
+
+          <!-- Free Studio Quick Row -->
+          <div id="mob-bar-free" class="mob-bar-row" style="display:none;">
+            <button id="mob-interact-toggle" class="mob-pill-accent">✋ 끌어접기</button>
+            <button id="mob-fold-dir" class="mob-pill-dir">계곡 ▲</button>
+            <button id="mob-undo" class="mob-icon-btn" aria-label="실행 취소">↩</button>
+            <button id="mob-flip" class="mob-icon-btn" aria-label="종이 뒤집기">⇄</button>
+            <button id="mob-open-tools" class="mob-pill-primary">⚙️ 도구</button>
           </div>
         </div>
 
@@ -300,7 +341,7 @@
         GIF에 작품 제목 · 단계 자막 · 진행 바 함께 표시
       </label>
 
-      <button id="gif-start-btn" class="btn-primary full-w" style="padding:10px 16px;font-size:13.5px;">
+      <button id="gif-start-btn" class="btn-primary full-w" style="padding:11px 16px;font-size:13.5px;">
         과정 전체 GIF 생성 시작
       </button>
 

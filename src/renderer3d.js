@@ -394,14 +394,153 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
 }
 
 function drawFreeStudioOverlay(ctx, width, height, cam, overlay, isDark) {
-  const { snapPoints, hoveredSnap, p1, p2, hoverWorld, foldType, hoverSide, previewFaces } = overlay;
+  const {
+    interactMode = 'drag',
+    snapPoints, hoveredSnap, p1, p2, hoverWorld, foldType, hoverSide, previewFaces,
+    dragStart, dragCurrent, dragSnapLabel, dragCrease,
+  } = overlay;
   ctx.save();
 
-  // Highlight moving region when choosing fold side (step 3/3)
+  const isMountain = foldType === 'mountain';
+  const accent = isMountain ? '#dc2626' : '#2563eb';
+
+  // ---- Mode A: Direct Drag-to-Fold visual cues ----
+  if (interactMode === 'drag') {
+    // 1. When idle (not dragging), show subtle, touch-friendly glowing grab rings on corners & midpoints
+    if (!dragStart && snapPoints) {
+      for (const sp of snapPoints) {
+        if (sp.kind === 'center') continue;
+        const pr = projectPoint(worldToCamera(sp, cam), width, height);
+        const isHov = hoveredSnap && hoveredSnap === sp;
+        const rad = isHov ? 9.5 : sp.kind === 'vertex' ? 6.5 : 4.2;
+
+        if (sp.kind === 'vertex' || isHov) {
+          ctx.beginPath();
+          ctx.arc(pr.x, pr.y, rad + 4, 0, Math.PI * 2);
+          ctx.fillStyle = isMountain ? 'rgba(220, 38, 38, 0.16)' : 'rgba(37, 99, 235, 0.16)';
+          ctx.fill();
+        }
+        ctx.beginPath();
+        ctx.arc(pr.x, pr.y, rad, 0, Math.PI * 2);
+        ctx.fillStyle = isHov ? accent : 'rgba(255, 255, 255, 0.94)';
+        ctx.fill();
+        ctx.lineWidth = isHov ? 2.4 : 1.8;
+        ctx.strokeStyle = isHov ? '#ffffff' : (sp.kind === 'vertex' ? accent : '#78716c');
+        ctx.stroke();
+      }
+    }
+
+    // 2. While actively dragging a corner/edge to fold!
+    if (dragStart && dragCurrent) {
+      // Show snap targets so the user sees where they can snap to!
+      if (snapPoints) {
+        for (const sp of snapPoints) {
+          if (Math.hypot(sp.x - dragStart.x, sp.y - dragStart.y) < 0.08) continue;
+          const pr = projectPoint(worldToCamera(sp, cam), width, height);
+          const isTarget = Math.hypot(sp.x - dragCurrent.x, sp.y - dragCurrent.y) < 0.03;
+          ctx.beginPath();
+          ctx.arc(pr.x, pr.y, isTarget ? 9 : sp.kind === 'center' ? 5.5 : 4.5, 0, Math.PI * 2);
+          ctx.fillStyle = isTarget ? accent : 'rgba(255,255,255,0.86)';
+          ctx.fill();
+          ctx.lineWidth = isTarget ? 2.6 : 1.5;
+          ctx.strokeStyle = isTarget ? '#ffffff' : (sp.kind === 'center' ? '#cf4436' : accent);
+          ctx.stroke();
+        }
+      }
+
+      // Dashed fold crease line along perpendicular bisector
+      if (dragCrease) {
+        const c1 = projectPoint(worldToCamera(dragCrease.p1, cam), width, height);
+        const c2 = projectPoint(worldToCamera(dragCrease.p2, cam), width, height);
+        ctx.beginPath();
+        ctx.setLineDash([]);
+        ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+        ctx.lineWidth = 4.6;
+        ctx.moveTo(c1.x, c1.y);
+        ctx.lineTo(c2.x, c2.y);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.setLineDash(isMountain ? [10, 4, 2, 4] : [8, 5]);
+        ctx.strokeStyle = accent;
+        ctx.lineWidth = 2.6;
+        ctx.moveTo(c1.x, c1.y);
+        ctx.lineTo(c2.x, c2.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      // Curved directional fold arrow from dragStart -> dragCurrent
+      const sA = projectPoint(worldToCamera(dragStart, cam), width, height);
+      const sB = projectPoint(worldToCamera(dragCurrent, cam), width, height);
+      const mx = (sA.x + sB.x) * 0.5;
+      const my = (sA.y + sB.y) * 0.5;
+      const dx = sB.x - sA.x;
+      const dy = sB.y - sA.y;
+      const dLen = Math.hypot(dx, dy);
+
+      if (dLen > 14) {
+        // Gentle arc bowing upward/outward like an origami diagram arrow
+        const cx = mx - dy * 0.16;
+        const cy = my + dx * 0.16 - 12;
+
+        ctx.beginPath();
+        ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+        ctx.lineWidth = 5;
+        ctx.moveTo(sA.x, sA.y);
+        ctx.quadraticCurveTo(cx, cy, sB.x, sB.y);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.strokeStyle = accent;
+        ctx.lineWidth = 2.8;
+        ctx.moveTo(sA.x, sA.y);
+        ctx.quadraticCurveTo(cx, cy, sB.x, sB.y);
+        ctx.stroke();
+
+        // Arrowhead at sB
+        const tangAng = Math.atan2(sB.y - cy, sB.x - cx);
+        const headLen = 11;
+        ctx.beginPath();
+        ctx.fillStyle = accent;
+        ctx.moveTo(sB.x, sB.y);
+        ctx.lineTo(sB.x - headLen * Math.cos(tangAng - 0.45), sB.y - headLen * Math.sin(tangAng - 0.45));
+        ctx.lineTo(sB.x - headLen * Math.cos(tangAng + 0.45), sB.y - headLen * Math.sin(tangAng + 0.45));
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      // Start point dot
+      ctx.beginPath();
+      ctx.arc(sA.x, sA.y, 6, 0, Math.PI * 2);
+      ctx.fillStyle = '#cf4436';
+      ctx.fill();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // Magnetic snap label badge near target
+      if (dragSnapLabel) {
+        ctx.font = '600 11.5px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+        const tw = ctx.measureText(dragSnapLabel).width;
+        const bx = Math.min(width - tw - 22, Math.max(10, sB.x - tw * 0.5 - 8));
+        const by = Math.max(12, sB.y - 34);
+        ctx.fillStyle = 'rgba(24, 22, 20, 0.88)';
+        roundRect(ctx, bx, by, tw + 16, 22, 11);
+        ctx.fill();
+        ctx.fillStyle = '#ffffff';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(dragSnapLabel, bx + 8, by + 11.5);
+      }
+    }
+
+    ctx.restore();
+    return;
+  }
+
+  // ---- Mode B: Precision 2-Point Line-Fold overlays ----
   if (previewFaces && previewFaces.length > 0 && hoverSide !== 0) {
-    ctx.fillStyle = foldType === 'mountain'
-      ? 'rgba(220, 38, 38, 0.28)'
-      : 'rgba(37, 99, 235, 0.28)';
+    ctx.fillStyle = isMountain ? 'rgba(220, 38, 38, 0.28)' : 'rgba(37, 99, 235, 0.28)';
     for (const f of previewFaces) {
       const scr = f.pts.map(p => projectPoint(worldToCamera(p, cam), width, height));
       ctx.beginPath();
@@ -412,36 +551,27 @@ function drawFreeStudioOverlay(ctx, width, height, cam, overlay, isDark) {
     }
   }
 
-  // Draw snap points
   if (snapPoints && !p2) {
     for (const sp of snapPoints) {
       const pr = projectPoint(worldToCamera(sp, cam), width, height);
       const isHov = hoveredSnap && hoveredSnap === sp;
       const isSelected = p1 && Math.hypot(sp.x - p1.x, sp.y - p1.y) < 0.02;
-      const rad = isHov || isSelected ? 6.5 : sp.kind === 'vertex' ? 4.2 : 3.0;
+      const rad = isHov || isSelected ? 7.5 : sp.kind === 'vertex' ? 5.2 : 3.6;
 
       ctx.beginPath();
       ctx.arc(pr.x, pr.y, rad, 0, Math.PI * 2);
-      ctx.fillStyle = isSelected
-        ? '#cf4436'
-        : isHov
-          ? (foldType === 'mountain' ? '#dc2626' : '#2563eb')
-          : (isDark ? 'rgba(255,255,255,0.85)' : 'rgba(255,255,255,0.92)');
+      ctx.fillStyle = isSelected ? '#cf4436' : isHov ? accent : (isDark ? 'rgba(255,255,255,0.88)' : 'rgba(255,255,255,0.94)');
       ctx.fill();
-      ctx.lineWidth = isHov || isSelected ? 2.2 : 1.4;
-      ctx.strokeStyle = isSelected || isHov
-        ? '#ffffff'
-        : (sp.kind === 'vertex' ? '#2563eb' : '#78716c');
+      ctx.lineWidth = isHov || isSelected ? 2.2 : 1.6;
+      ctx.strokeStyle = isSelected || isHov ? '#ffffff' : (sp.kind === 'vertex' ? '#2563eb' : '#78716c');
       ctx.stroke();
     }
   }
 
-  // Draw crease line (rubber-band from p1 to hoverWorld, or locked p1 -> p2)
   const lineEnd = p2 || hoverWorld;
   if (p1 && lineEnd) {
     const s1 = projectPoint(worldToCamera(p1, cam), width, height);
     const s2 = projectPoint(worldToCamera(lineEnd, cam), width, height);
-    const isMountain = foldType === 'mountain';
 
     ctx.beginPath();
     ctx.setLineDash([]);
@@ -453,18 +583,17 @@ function drawFreeStudioOverlay(ctx, width, height, cam, overlay, isDark) {
 
     ctx.beginPath();
     ctx.setLineDash(isMountain ? [10, 4, 2, 4] : [8, 5]);
-    ctx.strokeStyle = isMountain ? '#dc2626' : '#2563eb';
+    ctx.strokeStyle = accent;
     ctx.lineWidth = 2.5;
     ctx.moveTo(s1.x, s1.y);
     ctx.lineTo(s2.x, s2.y);
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // Anchor endpoints
     for (const s of [s1, s2]) {
       ctx.beginPath();
-      ctx.arc(s.x, s.y, 5.5, 0, Math.PI * 2);
-      ctx.fillStyle = isMountain ? '#dc2626' : '#2563eb';
+      ctx.arc(s.x, s.y, 6, 0, Math.PI * 2);
+      ctx.fillStyle = accent;
       ctx.fill();
       ctx.strokeStyle = '#ffffff';
       ctx.lineWidth = 2;
