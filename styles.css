@@ -124,6 +124,41 @@ html, body {
   display: none;
 }
 
+.lang-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  border: 1px solid var(--border, rgba(120, 100, 80, 0.22));
+  background: var(--background, #f6f2eb);
+  color: var(--muted-foreground, #6b6560);
+  border-radius: 8px;
+  padding: 5px 8px;
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.14s ease;
+}
+
+.lang-toggle:hover {
+  border-color: rgba(207, 68, 54, 0.45);
+}
+
+.lang-opt {
+  opacity: 0.48;
+  transition: opacity 0.14s ease, color 0.14s ease;
+}
+
+.lang-opt.active {
+  opacity: 1;
+  color: #cf4436;
+}
+
+.lang-sep {
+  opacity: 0.35;
+  font-weight: 500;
+}
+
 .icon-chip {
   border: 1px solid var(--border, rgba(120, 100, 80, 0.18));
   background: transparent;
@@ -839,6 +874,7 @@ html, body {
   color: var(--muted-foreground, #78716c);
   display: flex;
   align-items: center;
+  gap: 8px;
   justify-content: space-between;
   margin-bottom: 4px;
 }
@@ -1148,17 +1184,23 @@ html, body {
   }
 
   .brand-sub { display: none; }
-  .brand-title { font-size: 13.5px; }
+  .brand-title { font-size: 13px; }
   .brand-mark { width: 26px; height: 26px; border-radius: 7px; }
 
   .mode-tab {
-    font-size: 12px;
-    padding: 5px 10px;
+    font-size: 11.5px;
+    padding: 5px 9px;
   }
 
+  .topbar-right { gap: 5px; }
+  .lang-toggle { padding: 5px 6px; font-size: 11px; }
   .gif-btn-label { display: none; }
   .gif-btn-short { display: inline; }
-  #btn-open-gif { padding: 6px 10px; font-size: 12px; }
+  #btn-open-gif { padding: 6px 9px; font-size: 11.5px; }
+
+  @media (max-width: 430px) {
+    .brand-title { display: none; }
+  }
 
   /* Transform Sidebar into Smooth Slide-Up Bottom Sheet Drawer! */
   .sheet-backdrop { display: block; }

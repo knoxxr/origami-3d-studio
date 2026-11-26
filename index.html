@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<html lang="ko">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-  <title>종이공방 3D · 3D 종이접기 스튜디오 & GIF 내보내기</title>
-  <meta name="description" content="알려진 종이접기 기술 20종을 3D로 구현하고, 손가락 드래그로 직관적으로 접어 전 과정을 GIF로 내보내는 3D 종이접기 스튜디오" />
+  <title>Origami 3D Studio · 3D Folding & Full-Process GIF Export</title>
+  <meta name="description" content="3D origami simulator featuring 20 known origami techniques, 5 complete 3D models, intuitive touch drag-to-fold, and pure client-side full-process GIF export." />
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
@@ -20,30 +20,35 @@
           </svg>
         </div>
         <div>
-          <h1 class="brand-title">종이공방 3D</h1>
-          <div class="brand-sub">Origami 3D Studio · GIF Export</div>
+          <h1 class="brand-title" data-i18n="brandTitle">Origami 3D</h1>
+          <div class="brand-sub" data-i18n="brandSub">3D Folding Studio · GIF Export</div>
         </div>
       </div>
 
-      <nav class="mode-tabs" aria-label="스튜디오 모드">
-        <button id="tab-library" class="mode-tab active">라이브러리</button>
-        <button id="tab-free" class="mode-tab">직접 접기</button>
+      <nav class="mode-tabs" aria-label="Studio Mode">
+        <button id="tab-library" class="mode-tab active" data-i18n="tabLibrary">Library</button>
+        <button id="tab-free" class="mode-tab" data-i18n="tabFree">Free Fold</button>
       </nav>
 
       <div class="topbar-right">
         <div class="view-toggles">
-          <button id="toggle-guides" class="icon-chip active" title="접기선 표시">접기선</button>
-          <button id="toggle-cp" class="icon-chip active" title="2D 전개도 표시">전개도</button>
-          <button id="toggle-wire" class="icon-chip" title="와이어프레임 보기">와이어</button>
+          <button id="toggle-guides" class="icon-chip active" data-i18n="toggleGuides" data-i18n-title="toggleGuidesTitle" title="Show fold guides">Guides</button>
+          <button id="toggle-cp" class="icon-chip active" data-i18n="toggleCp" data-i18n-title="toggleCpTitle" title="Show 2D Crease Pattern">CP 2D</button>
+          <button id="toggle-wire" class="icon-chip" data-i18n="toggleWire" data-i18n-title="toggleWireTitle" title="Toggle wireframe">Wire</button>
         </div>
+        <button id="btn-lang-toggle" class="lang-toggle" title="Switch Language (English / 한국어)" aria-label="Switch Language">
+          <span class="lang-opt active" data-lang-opt="en">EN</span>
+          <span class="lang-sep">/</span>
+          <span class="lang-opt" data-lang-opt="ko">한</span>
+        </button>
         <button id="btn-open-gif" class="btn-primary">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
             <polyline points="7 10 12 15 17 10"/>
             <line x1="12" y1="15" x2="12" y2="3"/>
           </svg>
-          <span class="gif-btn-label">GIF 내보내기</span>
-          <span class="gif-btn-short">GIF</span>
+          <span class="gif-btn-label" data-i18n="btnGifLabel">Export GIF</span>
+          <span class="gif-btn-short" data-i18n="btnGifShort">GIF</span>
         </button>
       </div>
     </header>
@@ -58,8 +63,8 @@
         <div class="sheet-header">
           <div class="sheet-handle"></div>
           <div class="sheet-header-row">
-            <strong id="sheet-title">작품 · 종이접기 기술 (25종)</strong>
-            <button id="sheet-close-btn" class="sheet-close-btn" aria-label="패널 닫기">닫기 ✕</button>
+            <strong id="sheet-title" data-i18n="sheetTitleLibrary">Models &amp; Techniques (25)</strong>
+            <button id="sheet-close-btn" class="sheet-close-btn" data-i18n="sheetClose" aria-label="Close panel">Close ✕</button>
           </div>
         </div>
 
@@ -67,31 +72,31 @@
         <div id="panel-library" class="sidebar-scroll">
           <div id="library-info-card" class="info-card"></div>
 
-          <div class="filter-bar" id="catalog-filter-bar" role="tablist" aria-label="기법 분류 필터">
-            <button class="filter-chip active" data-filter="all">전체 25</button>
-            <button class="filter-chip" data-filter="model">작품 5</button>
-            <button class="filter-chip" data-filter="basic">기본 5</button>
-            <button class="filter-chip" data-filter="3d">입체 8</button>
-            <button class="filter-chip" data-filter="advanced">고급 7</button>
+          <div class="filter-bar" id="catalog-filter-bar" role="tablist" aria-label="Technique Category Filter">
+            <button class="filter-chip active" data-filter="all" data-i18n="filterAll">All 25</button>
+            <button class="filter-chip" data-filter="model" data-i18n="filterModel">Models 5</button>
+            <button class="filter-chip" data-filter="basic" data-i18n="filterBasic">Basic 5</button>
+            <button class="filter-chip" data-filter="3d" data-i18n="filter3d">3D 8</button>
+            <button class="filter-chip" data-filter="advanced" data-i18n="filterAdv">Adv 7</button>
           </div>
 
           <div id="sec-models">
-            <div class="section-label"><span>완성 작품 (3D 단계별)</span><span>5종</span></div>
+            <div class="section-label"><span data-i18n="secModelsTitle">Complete 3D Models</span><span data-i18n-count="5">5</span></div>
             <div id="catalog-models" class="catalog-grid"></div>
           </div>
 
           <div id="sec-basic">
-            <div class="section-label"><span>기본 접기 기술</span><span>5종</span></div>
+            <div class="section-label"><span data-i18n="secBasicTitle">Basic Fold Techniques</span><span data-i18n-count="5">5</span></div>
             <div id="catalog-tech-basic" class="catalog-grid"></div>
           </div>
 
           <div id="sec-3d">
-            <div class="section-label"><span>입체 · 기본형 · 반전 기술</span><span>8종</span></div>
+            <div class="section-label"><span data-i18n="sec3dTitle">3D · Base · Reverse Folds</span><span data-i18n-count="8">8</span></div>
             <div id="catalog-tech-3d" class="catalog-grid"></div>
           </div>
 
           <div id="sec-advanced">
-            <div class="section-label"><span>고급 · 싱크 · 테셀레이션</span><span>7종</span></div>
+            <div class="section-label"><span data-i18n="secAdvTitle">Advanced · Sink · Tessellations</span><span data-i18n-count="7">7</span></div>
             <div id="catalog-tech-adv" class="catalog-grid"></div>
           </div>
         </div>
@@ -99,107 +104,107 @@
         <!-- Mode 2: Free Fold Studio Panel -->
         <div id="panel-free" class="sidebar-scroll" style="display:none;">
           <div>
-            <div class="section-label"><span>조작 방식</span></div>
+            <div class="section-label"><span data-i18n="secInteract">Interaction Mode</span></div>
             <div class="interact-seg">
-              <button class="interact-btn active" data-interact="drag">✋ 끌어 접기</button>
-              <button class="interact-btn" data-interact="line">✂️ 선 긋기</button>
-              <button class="interact-btn" data-interact="orbit">🔄 3D 회전</button>
+              <button class="interact-btn active" data-interact="drag" data-i18n="interactDrag">✋ Drag Fold</button>
+              <button class="interact-btn" data-interact="line" data-i18n="interactLine">✂️ Line Fold</button>
+              <button class="interact-btn" data-interact="orbit" data-i18n="interactOrbit">🔄 3D Orbit</button>
             </div>
           </div>
 
           <div>
-            <div class="section-label"><span>접기 기술 선택</span></div>
+            <div class="section-label"><span data-i18n="secTool">Fold Technique</span></div>
             <div class="tool-grid">
               <button class="tool-btn active" data-tool="valley">
-                <span class="tool-btn-name" style="color:#2563eb;">계곡 접기</span>
-                <span class="tool-btn-sub">앞쪽으로 접기 (- - -)</span>
+                <span class="tool-btn-name" style="color:#2563eb;" data-i18n="toolValleyName">Valley Fold</span>
+                <span class="tool-btn-sub" data-i18n="toolValleySub">Fold forward (- - -)</span>
               </button>
               <button class="tool-btn" data-tool="mountain">
-                <span class="tool-btn-name" style="color:#dc2626;">산 접기</span>
-                <span class="tool-btn-sub">뒤쪽으로 접기 (- · -)</span>
+                <span class="tool-btn-name" style="color:#dc2626;" data-i18n="toolMountainName">Mountain Fold</span>
+                <span class="tool-btn-sub" data-i18n="toolMountainSub">Fold backward (- · -)</span>
               </button>
               <button class="tool-btn" data-tool="precrease">
-                <span class="tool-btn-name">접었다 펴기</span>
-                <span class="tool-btn-sub">예비선 만들기</span>
+                <span class="tool-btn-name" data-i18n="toolPrecreaseName">Pre-crease</span>
+                <span class="tool-btn-sub" data-i18n="toolPrecreaseSub">Fold &amp; unfold crease</span>
               </button>
               <button class="tool-btn" data-tool="pleat">
-                <span class="tool-btn-name">계단 접기</span>
-                <span class="tool-btn-sub">계곡+산 평행 주름</span>
+                <span class="tool-btn-name" data-i18n="toolPleatName">Pleat Fold</span>
+                <span class="tool-btn-sub" data-i18n="toolPleatSub">Valley + Mountain pair</span>
               </button>
             </div>
           </div>
 
           <div>
-            <div class="section-label"><span>접은 종이 펼치기 (자국 유지)</span></div>
+            <div class="section-label"><span data-i18n="secUnfold">Unfold (Keep Creases)</span></div>
             <div class="unfold-row">
-              <button id="btn-unfold-last" class="unfold-btn" disabled>📖 직전 펼치기</button>
-              <button id="btn-unfold-all" class="unfold-btn" disabled>📄 전체 펼치기</button>
+              <button id="btn-unfold-last" class="unfold-btn" data-i18n="btnUnfoldLast" disabled>📖 Unfold Last</button>
+              <button id="btn-unfold-all" class="unfold-btn" data-i18n="btnUnfoldAll" disabled>📄 Unfold All</button>
             </div>
           </div>
 
           <div class="control-card">
             <div class="control-row">
-              <strong>접기 각도</strong>
+              <strong data-i18n="ctrlAngle">Fold Angle</strong>
               <span id="free-angle-val" style="font-family:monospace;font-weight:700;">180°</span>
             </div>
             <input id="free-angle-slider" type="range" min="15" max="180" step="5" value="180" style="width:100%;accent-color:#cf4436;" />
             <div class="angle-chips">
               <button class="angle-chip" data-angle="90">90°</button>
               <button class="angle-chip" data-angle="135">135°</button>
-              <button class="angle-chip" data-angle="180">180° (완전)</button>
+              <button class="angle-chip" data-angle="180" data-i18n="angleFull">180° (Flat)</button>
             </div>
 
             <div id="pleat-offset-row" class="control-row" style="display:none;">
-              <strong>계단 폭</strong>
+              <strong data-i18n="ctrlPleatWidth">Pleat Width</strong>
               <input id="free-pleat-offset" type="range" min="0.12" max="0.5" step="0.02" value="0.25" style="flex:1;accent-color:#cf4436;" />
               <span id="free-pleat-val" style="font-family:monospace;">25%</span>
             </div>
 
             <div>
-              <div class="section-label" style="margin-bottom:4px;"><span>접기 대상 겹 (레이어)</span></div>
+              <div class="section-label" style="margin-bottom:4px;"><span data-i18n="secLayers">Target Layers</span></div>
               <div class="seg-mini">
-                <button id="layer-all" class="active">전체 겹</button>
-                <button id="layer-top">맨 위 겹만</button>
+                <button id="layer-all" class="active" data-i18n="layerAll">All Layers</button>
+                <button id="layer-top" data-i18n="layerTop">Top Layer Only</button>
               </div>
             </div>
           </div>
 
           <div>
-            <div class="section-label"><span>원클릭 기법 · 종이 조작</span></div>
+            <div class="section-label"><span data-i18n="secMacros">One-Click Folds &amp; Paper</span></div>
             <div class="macro-grid">
-              <button class="macro-btn" data-macro="diag">대각선 접기</button>
-              <button class="macro-btn" data-macro="halfV">세로 반 접기</button>
-              <button class="macro-btn" data-macro="halfH">가로 반 접기</button>
-              <button class="macro-btn" data-macro="kite">아이스크림 접기</button>
-              <button class="macro-btn" data-macro="blintz">방석 접기</button>
-              <button class="macro-btn" data-macro="pleat">계단 접기</button>
-              <button class="macro-btn" data-macro="accordion">아코디언 2단</button>
-              <button class="macro-btn" data-macro="grid">십자 예비선</button>
-              <button class="macro-btn" data-macro="flip">종이 뒤집기</button>
-              <button class="macro-btn" data-macro="rot45">45° 회전</button>
+              <button class="macro-btn" data-macro="diag" data-i18n="macroDiag">Diagonal Fold</button>
+              <button class="macro-btn" data-macro="halfV" data-i18n="macroHalfV">Half Vertical</button>
+              <button class="macro-btn" data-macro="halfH" data-i18n="macroHalfH">Half Horizontal</button>
+              <button class="macro-btn" data-macro="kite" data-i18n="macroKite">Kite Fold</button>
+              <button class="macro-btn" data-macro="blintz" data-i18n="macroBlintz">Blintz Fold</button>
+              <button class="macro-btn" data-macro="pleat" data-i18n="macroPleat">Pleat Fold</button>
+              <button class="macro-btn" data-macro="accordion" data-i18n="macroAccordion">Accordion ×2</button>
+              <button class="macro-btn" data-macro="grid" data-i18n="macroGrid">Cross Crease</button>
+              <button class="macro-btn" data-macro="flip" data-i18n="macroFlip">Flip Paper</button>
+              <button class="macro-btn" data-macro="rot45" data-i18n="macroRot45">Rotate 45°</button>
             </div>
           </div>
 
           <div>
-            <div class="section-label"><span>작품 이름 (GIF 제목)</span></div>
-            <input id="free-title-input" type="text" class="text-input" value="나의 3D 종이접기" />
+            <div class="section-label"><span data-i18n="secWorkTitle">Work Title (GIF Caption)</span></div>
+            <input id="free-title-input" type="text" class="text-input" value="My 3D Origami" />
           </div>
 
           <div style="display:flex;gap:6px;">
-            <button id="btn-undo" class="btn-secondary" style="flex:1;" disabled>실행 취소</button>
-            <button id="btn-redo" class="btn-secondary" style="flex:1;" disabled>다시 실행</button>
-            <button id="btn-reset" class="btn-secondary" title="새 종이로 초기화">초기화</button>
+            <button id="btn-undo" class="btn-secondary" style="flex:1;" data-i18n="btnUndo" disabled>Undo</button>
+            <button id="btn-redo" class="btn-secondary" style="flex:1;" data-i18n="btnRedo" disabled>Redo</button>
+            <button id="btn-reset" class="btn-secondary" data-i18n="btnReset">Reset</button>
           </div>
         </div>
 
         <!-- Paper Color Swatches Footer -->
         <div class="paper-bar">
-          <div class="section-label" style="margin-bottom:6px;"><span>색종이 앞·뒷면 색상</span></div>
+          <div class="section-label" style="margin-bottom:6px;"><span data-i18n="secPaperColor">Paper Front &amp; Back Colors</span></div>
           <div class="swatch-row">
             <div id="paper-swatches" style="display:flex;gap:6px;"></div>
             <div class="color-pickers">
-              <input id="color-front" type="color" value="#cf4436" title="앞면 색상" />
-              <input id="color-back" type="color" value="#f7f1e3" title="뒷면 색상" />
+              <input id="color-front" type="color" value="#cf4436" data-i18n-title="colorFrontTitle" title="Front color" />
+              <input id="color-back" type="color" value="#f7f1e3" data-i18n-title="colorBackTitle" title="Back color" />
             </div>
           </div>
         </div>
@@ -214,38 +219,38 @@
           <div class="viewport-hud-top">
             <div class="work-card">
               <div class="work-card-head">
-                <span id="work-title-badge">종이학 (학접기)</span>
-                <span id="work-subtitle">Traditional Paper Crane</span>
+                <span id="work-title-badge">Traditional Paper Crane</span>
+                <span id="work-subtitle">종이학 (학접기)</span>
               </div>
               <div class="hud-step-row">
                 <span id="hud-step-counter">STEP 1 / 10</span>
-                <span id="hud-step-title">대각선 예비선 접기</span>
+                <span id="hud-step-title">Diagonal Pre-creases</span>
               </div>
               <p id="hud-step-desc"></p>
             </div>
 
-            <div class="cam-bar" role="toolbar" aria-label="3D 카메라 시점">
-              <button id="cam-3d" class="cam-btn">입체</button>
-              <button id="cam-front" class="cam-btn">정면</button>
-              <button id="cam-side" class="cam-btn cam-desktop-only">측면</button>
-              <button id="cam-top" class="cam-btn cam-desktop-only">위</button>
-              <button id="cam-spin" class="cam-btn">회전</button>
+            <div class="cam-bar" role="toolbar" aria-label="3D Camera Presets">
+              <button id="cam-3d" class="cam-btn" data-i18n="cam3d">3D</button>
+              <button id="cam-front" class="cam-btn" data-i18n="camFront">Front</button>
+              <button id="cam-side" class="cam-btn cam-desktop-only" data-i18n="camSide">Side</button>
+              <button id="cam-top" class="cam-btn cam-desktop-only" data-i18n="camTop">Top</button>
+              <button id="cam-spin" class="cam-btn" data-i18n="camSpin">Spin</button>
             </div>
           </div>
 
           <!-- Free Studio Floating Guide Pill -->
           <div id="free-guide-banner" class="free-banner">
             <span class="free-dot"></span>
-            <span id="free-guide-text">모서리를 끌어 다른 점에 맞춰 접어보세요</span>
+            <span id="free-guide-text">Drag a corner onto another point to fold · Drag outside to orbit 3D</span>
           </div>
 
           <!-- 2D Crease Pattern Mini Overlay -->
           <div id="cp-overlay" class="cp-overlay">
             <div class="cp-title">
-              <span>2D 전개도</span>
+              <span data-i18n="cpTitle">Crease 2D</span>
               <span class="cp-legend">
-                <span class="cp-v">계곡</span>
-                <span class="cp-m">산</span>
+                <span class="cp-v" data-i18n="cpValley">Valley</span>
+                <span class="cp-m" data-i18n="cpMountain">Mountain</span>
               </span>
             </div>
             <canvas id="cp-canvas" width="128" height="128"></canvas>
@@ -256,19 +261,19 @@
         <div id="mobile-action-bar" class="mobile-action-bar">
           <!-- Library Quick Row -->
           <div id="mob-bar-library" class="mob-bar-row">
-            <button id="mob-open-library" class="mob-pill-primary">📚 작품·기법 (25)</button>
-            <button id="mob-prev" class="mob-icon-btn" aria-label="이전 단계">◀</button>
-            <button id="mob-play" class="mob-pill-accent">재생</button>
-            <button id="mob-next" class="mob-icon-btn" aria-label="다음 단계">▶</button>
+            <button id="mob-open-library" class="mob-pill-primary" data-i18n="mobOpenLib">📚 Library (25)</button>
+            <button id="mob-prev" class="mob-icon-btn" aria-label="Previous step">◀</button>
+            <button id="mob-play" class="mob-pill-accent">▶ Play</button>
+            <button id="mob-next" class="mob-icon-btn" aria-label="Next step">▶</button>
           </div>
 
           <!-- Free Studio Quick Row -->
           <div id="mob-bar-free" class="mob-bar-row" style="display:none;">
-            <button id="mob-interact-toggle" class="mob-pill-accent">✋ 끌어접기</button>
-            <button id="mob-fold-dir" class="mob-pill-dir">계곡 ▲</button>
-            <button id="mob-unfold" class="mob-pill-unfold" aria-label="직전 접기 펼치기" disabled>📖 펴기</button>
-            <button id="mob-undo" class="mob-icon-btn" aria-label="실행 취소">↩</button>
-            <button id="mob-open-tools" class="mob-pill-primary">⚙️ 도구</button>
+            <button id="mob-interact-toggle" class="mob-pill-accent">✋ Drag</button>
+            <button id="mob-fold-dir" class="mob-pill-dir">Valley ▲</button>
+            <button id="mob-unfold" class="mob-pill-unfold" data-i18n="mobUnfold" aria-label="Unfold last fold" disabled>📖 Unfold</button>
+            <button id="mob-undo" class="mob-icon-btn" aria-label="Undo">↩</button>
+            <button id="mob-open-tools" class="mob-pill-primary" data-i18n="mobTools">⚙️ Tools</button>
           </div>
         </div>
 
@@ -276,13 +281,13 @@
         <footer class="timeline-dock">
           <div class="timeline-controls">
             <div class="play-group">
-              <button id="btn-restart" class="btn-secondary" title="처음부터 다시 재생">처음</button>
-              <button id="btn-prev" class="btn-secondary" title="이전 단계">◀</button>
-              <button id="btn-play" class="btn-primary">일시정지</button>
-              <button id="btn-next" class="btn-secondary" title="다음 단계">▶</button>
+              <button id="btn-restart" class="btn-secondary" data-i18n="btnRestart">Start</button>
+              <button id="btn-prev" class="btn-secondary" aria-label="Previous step">◀</button>
+              <button id="btn-play" class="btn-primary">Pause</button>
+              <button id="btn-next" class="btn-secondary" aria-label="Next step">▶</button>
             </div>
             <input id="timeline-slider" type="range" min="0" max="10" step="0.01" value="0" />
-            <select id="speed-select" class="speed-select" title="재생 속도">
+            <select id="speed-select" class="speed-select" aria-label="Playback speed">
               <option value="0.5">0.5x</option>
               <option value="1" selected>1.0x</option>
               <option value="1.5">1.5x</option>
@@ -300,71 +305,71 @@
     <div class="modal-card">
       <div class="modal-header">
         <div>
-          <h2 id="gif-modal-title" class="modal-title">과정 전체 GIF 내보내기</h2>
-          <div id="gif-work-name" class="modal-sub">종이학 (10단계 전체 과정)</div>
+          <h2 id="gif-modal-title" class="modal-title" data-i18n="gifModalTitle">Export Full-Process GIF</h2>
+          <div id="gif-work-name" class="modal-sub">Traditional Paper Crane (10-step full process)</div>
         </div>
-        <button id="gif-close-btn" class="modal-close" aria-label="닫기">×</button>
+        <button id="gif-close-btn" class="modal-close" aria-label="Close">×</button>
       </div>
 
       <div class="gif-form-grid">
         <div class="form-field">
-          <label for="gif-resolution">해상도</label>
+          <label for="gif-resolution" data-i18n="gifResLabel">Resolution</label>
           <select id="gif-resolution">
-            <option value="480x360">480 × 360 (빠른 생성)</option>
-            <option value="640x480" selected>640 × 480 (권장 화질)</option>
-            <option value="800x600">800 × 600 (고화질)</option>
+            <option value="480x360" data-i18n="gifResLow">480 × 360 (Fast)</option>
+            <option value="640x480" selected data-i18n="gifResMid">640 × 480 (Recommended)</option>
+            <option value="800x600" data-i18n="gifResHigh">800 × 600 (High Quality)</option>
           </select>
         </div>
 
         <div class="form-field">
-          <label for="gif-fps">프레임 속도 (FPS)</label>
+          <label for="gif-fps" data-i18n="gifFpsLabel">Frame Rate (FPS)</label>
           <select id="gif-fps">
-            <option value="12">12 fps (가벼움)</option>
-            <option value="16" selected>16 fps (부드러움)</option>
-            <option value="20">20 fps (매우 부드러움)</option>
+            <option value="12" data-i18n="gifFps12">12 fps (Compact)</option>
+            <option value="16" selected data-i18n="gifFps16">16 fps (Smooth)</option>
+            <option value="20" data-i18n="gifFps20">20 fps (Ultra Smooth)</option>
           </select>
         </div>
 
         <div class="form-field">
-          <label for="gif-speed">단계당 재생 시간</label>
+          <label for="gif-speed" data-i18n="gifSpeedLabel">Time per Step</label>
           <select id="gif-speed">
-            <option value="0.6">빠름 (0.6초/단계)</option>
-            <option value="0.95" selected>보통 (0.95초/단계)</option>
-            <option value="1.35">천천히 (1.35초/단계)</option>
+            <option value="0.6" data-i18n="gifSpeedFast">Fast (0.6s / step)</option>
+            <option value="0.95" selected data-i18n="gifSpeedMid">Normal (0.95s / step)</option>
+            <option value="1.35" data-i18n="gifSpeedSlow">Slow (1.35s / step)</option>
           </select>
         </div>
 
         <div class="form-field">
-          <label for="gif-camera-mode">3D 카메라 연출</label>
+          <label for="gif-camera-mode" data-i18n="gifCamLabel">3D Camera Motion</label>
           <select id="gif-camera-mode">
-            <option value="orbit-spin" selected>부드러운 오빗 + 완성 360° 회전</option>
-            <option value="fixed-spin">현재 각도 + 완성 360° 회전</option>
-            <option value="fixed">현재 카메라 각도 고정</option>
+            <option value="orbit-spin" selected data-i18n="gifCamOrbitSpin">Smooth Orbit + 360° Finale Spin</option>
+            <option value="fixed-spin" data-i18n="gifCamFixedSpin">Current Angle + 360° Finale Spin</option>
+            <option value="fixed" data-i18n="gifCamFixed">Lock Current Camera Angle</option>
           </select>
         </div>
       </div>
 
       <label class="check-row">
         <input id="gif-show-hud" type="checkbox" checked style="accent-color:#cf4436;" />
-        GIF에 작품 제목 · 단계 자막 · 진행 바 함께 표시
+        <span data-i18n="gifShowHud">Include work title, step captions &amp; progress bar in GIF</span>
       </label>
 
-      <button id="gif-start-btn" class="btn-primary full-w" style="padding:11px 16px;font-size:13.5px;">
-        과정 전체 GIF 생성 시작
+      <button id="gif-start-btn" class="btn-primary full-w" style="padding:11px 16px;font-size:13.5px;" data-i18n="gifStartBtn">
+        Generate Full-Process GIF
       </button>
 
       <div id="gif-progress-wrap" class="progress-wrap" style="display:none;">
         <div class="progress-track">
           <div id="gif-progress-bar" class="progress-fill"></div>
         </div>
-        <div id="gif-progress-text" class="progress-text">준비 중...</div>
+        <div id="gif-progress-text" class="progress-text">Preparing...</div>
       </div>
 
       <div id="gif-result-wrap" class="gif-result-wrap" style="display:none;">
-        <img id="gif-preview-img" class="gif-preview-img" alt="생성된 종이접기 과정 GIF 미리보기" />
+        <img id="gif-preview-img" class="gif-preview-img" alt="Generated Origami Process GIF Preview" />
         <div class="gif-result-footer">
           <span id="gif-meta-info" class="gif-meta-info"></span>
-          <a id="gif-download-link" class="btn-primary" style="text-decoration:none;">GIF 파일 다운로드 (.gif)</a>
+          <a id="gif-download-link" class="btn-primary" style="text-decoration:none;" data-i18n="gifDownload">Download GIF (.gif)</a>
         </div>
       </div>
     </div>

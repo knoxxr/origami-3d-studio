@@ -406,7 +406,7 @@ function drawFreeStudioOverlay(ctx, width, height, cam, overlay, isDark) {
   const {
     interactMode = 'drag',
     snapPoints, hoveredSnap, p1, p2, hoverWorld, foldType, hoverSide, previewFaces,
-    dragStart, dragCurrent, dragSnapLabel, dragCrease, dragIsUnfold = false, unfoldGhost = null,
+    dragStart, dragCurrent, dragSnapLabel, dragCrease, dragIsUnfold = false, unfoldGhost = null, unfoldGhostLabel = 'Unfold',
   } = overlay;
   ctx.save();
 
@@ -474,7 +474,7 @@ function drawFreeStudioOverlay(ctx, width, height, cam, overlay, isDark) {
         ctx.setLineDash([]);
         if (!dragIsUnfold) {
           ctx.font = '600 10.5px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-          const lbl = '펼치기';
+          const lbl = unfoldGhostLabel;
           const tw = ctx.measureText(lbl).width;
           ctx.fillStyle = 'rgba(13, 148, 136, 0.90)';
           roundRect(ctx, ug.x - tw * 0.5 - 6, ug.y + 14, tw + 12, 18, 9);

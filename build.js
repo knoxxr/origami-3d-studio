@@ -16,6 +16,7 @@ const moduleOrder = [
   'src/advancedTechniques.js',
   'src/kinematicModels.js',
   'src/renderer3d.js',
+  'src/i18n.js',
   'src/app.js',
 ];
 
