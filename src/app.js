@@ -33,9 +33,12 @@ export function initOrigamiStudio() {
     // Playback timeline (continuous float in [0, stepCount])
     playPos: 0,
     playing: true,
+    loopPlay: false,
+    loopHoldTimer: 0,
     playbackSpeed: 1.0,
     pauseBetweenSteps: 0.42,
     stepHoldTimer: 0,
+    lastScrolledStepIdx: -1,
 
     // 3D Orbit Camera
     camera: { yaw: 0.58, pitch: 0.34, distance: 4.8, target: v3(0, 0, 0) },
@@ -52,6 +55,9 @@ export function initOrigamiStudio() {
     freeAngle: 180,
     freeLayerScope: 'all', // 'all' | 'top'
     freePleatOffset: 0.25,
+    freeMirror: false,
+    restoredStepCount: 0,
+    restoredToastShown: false,
 
     // Interactive Line-Fold state
     pickP1: null,
@@ -66,11 +72,16 @@ export function initOrigamiStudio() {
     dragCurrent: null,
     dragSnapLabel: '',
     dragCrease: null,
+    dragMirrorCrease: null,
     dragLiveStep: null,
     dragLiveCompiled: null,
     dragLiveT: 0,
     dragIsUnfold: false,
     dragUnfoldGhost: null,
+    dragCancelZone: false,
+    dragShiftFlip: false,
+    dragAltFree: false,
+    lastSnapId: '',
 
     // Compiled timeline cache
     compiledPlanar: null,
@@ -150,10 +161,12 @@ export function initOrigamiStudio() {
   detectTheme();
   window.addEventListener('themechange', () => { detectTheme(); renderAll(); });
 
-  // ---- Mobile Bottom Sheet Controls ----
+  // ---- Mobile Bottom Sheet Controls (+ Swipe-Down to Close) ----
   function openSheet() {
     state.sheetOpen = true;
-    $('studio-sidebar').classList.add('sheet-open');
+    const sb = $('studio-sidebar');
+    sb.style.transform = '';
+    sb.classList.add('sheet-open');
     $('sheet-backdrop').classList.add('open');
     $('sheet-title').textContent = state.mode === 'library'
       ? t('sheetTitleLibrary')
@@ -162,8 +175,135 @@ export function initOrigamiStudio() {
 
   function closeSheet() {
     state.sheetOpen = false;
-    $('studio-sidebar').classList.remove('sheet-open');
+    const sb = $('studio-sidebar');
+    sb.style.transform = '';
+    sb.classList.remove('sheet-dragging');
+    sb.classList.remove('sheet-open');
     $('sheet-backdrop').classList.remove('open');
+  }
+
+  // Swipe down on mobile bottom sheet header handle to dismiss smoothly
+  const sheetHeaderEl = document.querySelector('.sheet-header');
+  if (sheetHeaderEl) {
+    let sheetSwipeStartY = 0;
+    let sheetSwipeDy = 0;
+    let sheetSwiping = false;
+    sheetHeaderEl.addEventListener('pointerdown', (e) => {
+      if (!state.sheetOpen || e.target.closest('button')) return;
+      sheetSwiping = true;
+      sheetSwipeStartY = e.clientY;
+      sheetSwipeDy = 0;
+      $('studio-sidebar').classList.add('sheet-dragging');
+      try { sheetHeaderEl.setPointerCapture(e.pointerId); } catch {}
+    });
+    sheetHeaderEl.addEventListener('pointermove', (e) => {
+      if (!sheetSwiping) return;
+      sheetSwipeDy = Math.max(0, e.clientY - sheetSwipeStartY);
+      $('studio-sidebar').style.transform = `translateY(${sheetSwipeDy}px)`;
+    });
+    const finishSheetSwipe = () => {
+      if (!sheetSwiping) return;
+      sheetSwiping = false;
+      const sb = $('studio-sidebar');
+      sb.classList.remove('sheet-dragging');
+      if (sheetSwipeDy > 72) {
+        closeSheet();
+      } else {
+        sb.style.transform = '';
+      }
+    };
+    sheetHeaderEl.addEventListener('pointerup', finishSheetSwipe);
+    sheetHeaderEl.addEventListener('pointercancel', finishSheetSwipe);
+  }
+
+  // ---- Toast, Haptics, Auto-Save, Mirror, Loop & Shortcuts Helpers ----
+  let toastTimer = null;
+  function showToast(msg, durationMs = 2000) {
+    const el = $('studio-toast');
+    if (!el || !msg) return;
+    el.textContent = msg;
+    el.classList.add('show');
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.classList.remove('show'); }, durationMs);
+  }
+
+  function triggerHaptic(ms = 8) {
+    try {
+      if (isMobileViewport() && navigator.vibrate) navigator.vibrate(ms);
+    } catch {
+      // Ignore unsupported vibration environments
+    }
+  }
+
+  const DRAFT_KEY = 'origami3d_free_draft_v1';
+  function saveFreeDraft() {
+    try {
+      if (state.freeSteps.length === 0) {
+        window.localStorage.removeItem(DRAFT_KEY);
+        return;
+      }
+      window.localStorage.setItem(DRAFT_KEY, JSON.stringify({
+        v: 1,
+        title: state.freeTitle,
+        paper: state.freePaper,
+        steps: state.freeSteps,
+        frontColor: state.frontColor,
+        backColor: state.backColor,
+        mirror: state.freeMirror,
+      }));
+    } catch {
+      // Ignore storage quota / private mode restrictions
+    }
+  }
+
+  function loadFreeDraft() {
+    try {
+      const raw = window.localStorage.getItem(DRAFT_KEY);
+      if (!raw) return;
+      const data = JSON.parse(raw);
+      if (!data || !Array.isArray(data.steps) || data.steps.length === 0) return;
+      state.freeSteps = data.steps;
+      if (data.paper && typeof data.paper.width === 'number') state.freePaper = data.paper;
+      if (typeof data.title === 'string' && data.title.trim()) state.freeTitle = data.title;
+      if (typeof data.frontColor === 'string') {
+        state.frontColor = data.frontColor;
+        if ($('color-front')) $('color-front').value = data.frontColor;
+      }
+      if (typeof data.backColor === 'string') {
+        state.backColor = data.backColor;
+        if ($('color-back')) $('color-back').value = data.backColor;
+      }
+      state.freeMirror = !!data.mirror;
+      state.restoredStepCount = data.steps.length;
+    } catch {
+      // Ignore corrupted localStorage draft
+    }
+  }
+
+  function clearFreeDraft() {
+    try { window.localStorage.removeItem(DRAFT_KEY); } catch {}
+  }
+
+  function toggleMirrorFold() {
+    state.freeMirror = !state.freeMirror;
+    clearInteractiveDraft();
+    saveFreeDraft();
+    syncUI();
+  }
+
+  function toggleLoopPlay() {
+    state.loopPlay = !state.loopPlay;
+    state.loopHoldTimer = 0;
+    syncPlaybackControls();
+  }
+
+  function openShortcutsModal() {
+    closeSheet();
+    if ($('shortcuts-modal')) $('shortcuts-modal').classList.add('open');
+  }
+
+  function closeShortcutsModal() {
+    if ($('shortcuts-modal')) $('shortcuts-modal').classList.remove('open');
   }
 
   // ---- Active Work Helpers ----
@@ -287,6 +427,10 @@ export function initOrigamiStudio() {
         distance: idealDistanceForRadius(bounds.radius),
         target: bounds.center,
       };
+      if (state.restoredStepCount > 0 && !state.restoredToastShown) {
+        state.restoredToastShown = true;
+        showToast(t('toastRestored', state.restoredStepCount), 2600);
+      }
     } else {
       const m = getActiveModel();
       const bounds = getCurrentPaperBounds();
@@ -327,6 +471,7 @@ export function initOrigamiStudio() {
       distance: idealDistanceForRadius(bounds.radius),
       target: bounds.center,
     };
+    saveFreeDraft();
     if (isMobileViewport()) closeSheet();
     syncUI();
   }
@@ -340,11 +485,16 @@ export function initOrigamiStudio() {
     state.dragCurrent = null;
     state.dragSnapLabel = '';
     state.dragCrease = null;
+    state.dragMirrorCrease = null;
     state.dragLiveStep = null;
     state.dragLiveCompiled = null;
     state.dragLiveT = 0;
     state.dragIsUnfold = false;
     state.dragUnfoldGhost = null;
+    state.dragCancelZone = false;
+    state.dragShiftFlip = false;
+    state.dragAltFree = false;
+    state.lastSnapId = '';
   }
 
   // ---- Free Fold Actions ----
@@ -356,6 +506,8 @@ export function initOrigamiStudio() {
     state.playPos = Math.max(0, state.freeSteps.length - 1 + startOffsetT);
     state.playing = true;
     state.stepHoldTimer = 0;
+    state.loopHoldTimer = 0;
+    saveFreeDraft();
     syncUI();
   }
 
@@ -401,6 +553,7 @@ export function initOrigamiStudio() {
     rebuildCompiledTimeline();
     state.playing = false;
     state.playPos = state.freeSteps.length;
+    saveFreeDraft();
     syncUI();
   }
 
@@ -414,10 +567,12 @@ export function initOrigamiStudio() {
     state.freeRedo = [];
     state.freePaper = { width: 2, height: 2, rotationDeg: 0 };
     state.userZoomScale = 1.0;
+    state.restoredStepCount = 0;
     clearInteractiveDraft();
     rebuildCompiledTimeline();
     state.playing = false;
     state.playPos = 0;
+    clearFreeDraft();
     syncUI();
   }
 
@@ -429,6 +584,7 @@ export function initOrigamiStudio() {
     rebuildCompiledTimeline();
     state.playPos = Math.min(state.playPos, state.freeSteps.length);
     state.playing = false;
+    saveFreeDraft();
     syncUI();
   }
 
@@ -482,15 +638,20 @@ export function initOrigamiStudio() {
     return { x: e.clientX - rect.left, y: e.clientY - rect.top, w: rect.width, h: rect.height };
   }
 
-  function findNearestSnap(sx, sy, w, h, radiusPx = 28, excludePt = null) {
+  function findNearestSnap(sx, sy, w, h, radiusPx = 28, excludePt = null, allowMinor = true) {
     if (!lastCam || state.snapPoints.length === 0) return null;
-    let best = null, bestDist = radiusPx;
+    let best = null, bestScore = radiusPx;
     for (const sp of state.snapPoints) {
+      if (!allowMinor && (sp.kind === 'quarter' || sp.kind === 'intersect')) continue;
       if (excludePt && Math.hypot(sp.x - excludePt.x, sp.y - excludePt.y) < 0.08) continue;
       const pr = projectPoint(worldToCamera(sp, lastCam), w, h);
       const d = Math.hypot(pr.x - sx, pr.y - sy);
-      if (d < bestDist) {
-        bestDist = d;
+      if (d >= radiusPx) continue;
+      // Slight preference for vertices/intersections/center over quarter points when close
+      const bias = sp.kind === 'vertex' ? 0 : sp.kind === 'center' ? 1.5 : sp.kind === 'intersect' ? 2.0 : sp.kind === 'midpoint' ? 2.5 : 5.5;
+      const score = d + bias;
+      if (score < bestScore) {
+        bestScore = score;
         best = sp;
       }
     }
@@ -531,8 +692,87 @@ export function initOrigamiStudio() {
     return best;
   }
 
+  function pointLineDist2D(px, py, a, b) {
+    const dx = b[0] - a[0], dy = b[1] - a[1];
+    const len = Math.hypot(dx, dy) || 1;
+    return Math.abs((px - a[0]) * (-dy) + (py - a[1]) * dx) / len;
+  }
+
+  /**
+   * Build either a single fold step or a left-right symmetric multiFold step
+   * when Mirror Fold mode is active and the two halves do not collide across x = center.x.
+   */
+  function buildFoldStepWithMirror(spec, paperBounds) {
+    const {
+      toolType, p1, p2, side, angleDeg, layerScope, offset,
+      labelEn, labelKo, techniqueEn, techniqueKo,
+    } = spec;
+
+    const singleStep = {
+      type: toolType,
+      p1,
+      p2,
+      side,
+      angleDeg,
+      layerScope,
+      offset,
+      label: labelEn,
+      labelEn,
+      labelKo,
+      technique: techniqueEn,
+      techniqueEn,
+      techniqueKo,
+    };
+
+    if (!state.freeMirror || (toolType !== 'valley' && toolType !== 'mountain')) {
+      return { step: singleStep, mirrorCrease: null };
+    }
+
+    const mx = paperBounds.center.x;
+    const mp1 = [2 * mx - p1[0], p1[1]];
+    const mp2 = [2 * mx - p2[0], p2[1]];
+    const mSide = -side;
+
+    // Skip mirroring if crease is virtually identical to its mirror (e.g. horizontal or center vertical fold)
+    const sameLine = pointLineDist2D(mp1[0], mp1[1], p1, p2) < 0.08 && pointLineDist2D(mp2[0], mp2[1], p1, p2) < 0.08;
+    if (sameLine) {
+      return { step: singleStep, mirrorCrease: null };
+    }
+
+    // Skip mirroring if the primary fold's moving side strictly crosses the center axis (would overlap itself)
+    const ax = p2[0] - p1[0], ay = p2[1] - p1[1];
+    const aLen = Math.hypot(ax, ay) || 1;
+    const nx = -ay / aLen, ny = ax / aLen;
+    const centerSigned = ((mx - p1[0]) * nx + (paperBounds.center.y - p1[1]) * ny) * side;
+    if (centerSigned > 0.06) {
+      return { step: singleStep, mirrorCrease: null };
+    }
+
+    const mirrorStep = {
+      type: 'multiFold',
+      label: `${labelEn} (${UI_STRINGS.en.mirrorSuffix})`,
+      labelEn: `${labelEn} (${UI_STRINGS.en.mirrorSuffix})`,
+      labelKo: `${labelKo} (${UI_STRINGS.ko.mirrorSuffix})`,
+      technique: `${techniqueEn} (${UI_STRINGS.en.mirrorSuffix})`,
+      techniqueEn: `${techniqueEn} (${UI_STRINGS.en.mirrorSuffix})`,
+      techniqueKo: `${techniqueKo} (${UI_STRINGS.ko.mirrorSuffix})`,
+      folds: [
+        { p1, p2, side, foldType: toolType, angleDeg, layerScope },
+        { p1: mp1, p2: mp2, side: mSide, foldType: toolType, angleDeg, layerScope },
+      ],
+    };
+
+    return {
+      step: mirrorStep,
+      mirrorCrease: { p1: v3(mp1[0], mp1[1], 0), p2: v3(mp2[0], mp2[1], 0) },
+    };
+  }
+
+  let lastDragSx = 0, lastDragSy = 0, lastDragW = 0, lastDragH = 0;
+
   function updateDirectDragFold(sx, sy, w, h) {
     if (!state.dragStart || !lastCam || !state.compiledPlanar) return;
+    lastDragSx = sx; lastDragSy = sy; lastDragW = w; lastDragH = h;
     const snapRadius = isMobileViewport() ? 36 : 26;
     const raw = screenToPlane(sx, sy, w, h, lastCam, v3(0, 0, 0), v3(0, 0, 1));
     const rawPt = raw ? v3(raw.x, raw.y, 0) : state.dragStart;
@@ -555,13 +795,21 @@ export function initOrigamiStudio() {
         if (proj > uLen * 0.52 && perp < Math.max(0.48, proj * 0.65)) {
           const distToOrigin = Math.hypot(rawPt.x - unfoldPair.unfolded.x, rawPt.y - unfoldPair.unfolded.y);
           const snapped = distToOrigin < 0.42 || proj >= uLen * 0.88;
+          if (snapped && state.lastSnapId !== 'unfold-origin') {
+            state.lastSnapId = 'unfold-origin';
+            triggerHaptic(10);
+          } else if (!snapped) {
+            state.lastSnapId = '';
+          }
           const topStep = state.freeSteps.slice().reverse().find(s => !['unfoldLast', 'unfoldAll', 'precrease', 'flip', 'rotate'].includes(s.type));
           const enLbl = topStep?.labelEn || '';
           const koLbl = topStep?.labelKo || topStep?.label || '';
+          state.dragCancelZone = false;
           state.dragIsUnfold = true;
           state.dragCurrent = snapped ? v3(unfoldPair.unfolded.x, unfoldPair.unfolded.y, 0) : rawPt;
           state.dragSnapLabel = snapped ? t('unfoldSnapOrigin') : t('unfoldDragOut');
           state.dragCrease = null;
+          state.dragMirrorCrease = null;
           state.dragLiveStep = {
             type: 'unfoldLast',
             label: UI_STRINGS.en.freeStepUnfoldLast(enLbl),
@@ -580,16 +828,31 @@ export function initOrigamiStudio() {
       }
     }
 
-    // 2. Standard Direct Drag-to-Fold (Huzita-Hatori Axiom 2)
+    // 2. Standard Direct Drag-to-Fold (Huzita-Hatori Axiom 2) + optional Mirror Fold & Shift/Alt modulation
     state.dragIsUnfold = false;
-    const snapTarget = findNearestSnap(sx, sy, w, h, snapRadius, state.dragStart);
+    const snapTarget = state.dragAltFree ? null : findNearestSnap(sx, sy, w, h, snapRadius, state.dragStart, true);
     const cur = snapTarget ? v3(snapTarget.x, snapTarget.y, 0) : rawPt;
 
     state.dragCurrent = cur;
-    const snapKey = snapTarget
-      ? (snapTarget.kind === 'vertex' ? 'snapVertex' : snapTarget.kind === 'center' ? 'snapCenter' : 'snapMid')
-      : '';
+    const snapKeyMap = {
+      vertex: 'snapVertex',
+      center: 'snapCenter',
+      midpoint: 'snapMid',
+      intersect: 'snapIntersect',
+      quarter: 'snapQuarter',
+    };
+    const snapKey = snapTarget ? (snapKeyMap[snapTarget.kind] || 'snapMid') : '';
     state.dragSnapLabel = snapKey ? t(snapKey) : '';
+
+    if (snapTarget) {
+      const sid = `${snapTarget.kind}:${snapTarget.x.toFixed(2)},${snapTarget.y.toFixed(2)}`;
+      if (state.lastSnapId !== sid) {
+        state.lastSnapId = sid;
+        triggerHaptic(8);
+      }
+    } else {
+      state.lastSnapId = '';
+    }
 
     const dx = cur.x - state.dragStart.x;
     const dy = cur.y - state.dragStart.y;
@@ -598,13 +861,16 @@ export function initOrigamiStudio() {
     const paperBounds = computePaperBounds(state.compiledPlanar.finalState.faces);
     const minDrag = Math.max(0.035, Math.min(0.14, paperBounds.radius * 0.12));
     if (dLen < minDrag) {
+      state.dragCancelZone = dragMoved;
       state.dragCrease = null;
+      state.dragMirrorCrease = null;
       state.dragLiveStep = null;
       state.dragLiveCompiled = null;
       state.dragLiveT = 0;
       return;
     }
 
+    state.dragCancelZone = false;
     // Huzita-Hatori Axiom 2: exact perpendicular bisector bringing dragStart onto cur!
     const mid = v3((state.dragStart.x + cur.x) * 0.5, (state.dragStart.y + cur.y) * 0.5, 0);
     const dir = norm(v3(-dy, dx, 0));
@@ -614,29 +880,30 @@ export function initOrigamiStudio() {
     const leftNormal = norm(cross(v3(0, 0, 1), dir));
     const side = dot(sub(state.dragStart, mid), leftNormal) >= 0 ? 1 : -1;
 
+    const effTool = getEffectiveDragTool();
     const toolNamesEn = { valley: 'Valley Fold', mountain: 'Mountain Fold', precrease: 'Pre-crease', pleat: 'Pleat Fold' };
     const toolNamesKo = { valley: '계곡 접기', mountain: '산 접기', precrease: '접었다 펴기', pleat: '계단 접기' };
     const sufEn = snapKey ? ` · ${UI_STRINGS.en[snapKey]}` : '';
     const sufKo = snapKey ? ` · ${UI_STRINGS.ko[snapKey]}` : '';
-    const liveStep = {
-      type: state.freeTool,
+
+    const built = buildFoldStepWithMirror({
+      toolType: effTool,
       p1: [p1.x, p1.y],
       p2: [p2.x, p2.y],
       side,
       angleDeg: state.freeAngle,
       layerScope: state.freeLayerScope,
       offset: state.freePleatOffset,
-      label: `${toolNamesEn[state.freeTool]}${sufEn}`,
-      labelEn: `${toolNamesEn[state.freeTool]}${sufEn}`,
-      labelKo: `${toolNamesKo[state.freeTool]}${sufKo}`,
-      technique: toolNamesEn[state.freeTool],
-      techniqueEn: toolNamesEn[state.freeTool],
-      techniqueKo: toolNamesKo[state.freeTool],
-    };
+      labelEn: `${toolNamesEn[effTool]}${sufEn}`,
+      labelKo: `${toolNamesKo[effTool]}${sufKo}`,
+      techniqueEn: toolNamesEn[effTool],
+      techniqueKo: toolNamesKo[effTool],
+    }, paperBounds);
 
     state.dragCrease = { p1, p2 };
-    state.dragLiveStep = liveStep;
-    state.dragLiveCompiled = compilePlanarStep(state.compiledPlanar.finalState, liveStep);
+    state.dragMirrorCrease = built.mirrorCrease;
+    state.dragLiveStep = built.step;
+    state.dragLiveCompiled = compilePlanarStep(state.compiledPlanar.finalState, built.step);
     // Real-time 3D preview angle follows drag distance & snaps close to finished when locked on target!
     const liveScale = Math.max(0.32, paperBounds.radius * 1.1);
     state.dragLiveT = snapTarget ? 0.88 : Math.min(0.84, 0.25 + (dLen / liveScale) * 0.62);
@@ -664,19 +931,16 @@ export function initOrigamiStudio() {
   let dragMoved = false;
   let dragStartX = 0, dragStartY = 0;
   let dragLastX = 0, dragLastY = 0;
+  let dragStartButton = 0;
   let pinchStartDist = 0, pinchStartCamDist = 4.6, pinchMidX = 0, pinchMidY = 0;
+  let lastTapTime = 0, lastTapX = 0, lastTapY = 0;
 
   canvas.addEventListener('pointerdown', (e) => {
     canvas.setPointerCapture(e.pointerId);
     const { x, y, w, h } = getCanvasCoords(e);
     activePointers.set(e.pointerId, { x, y });
     state.targetCamera = null;
-
-    if (e.button === 2 && state.mode === 'free') {
-      clearInteractiveDraft();
-      updateFreeBanner();
-      return;
-    }
+    dragStartButton = e.button;
 
     // Two-finger gesture -> Pinch-to-Zoom + 2-Finger Orbit!
     if (activePointers.size === 2) {
@@ -696,6 +960,12 @@ export function initOrigamiStudio() {
     dragStartX = dragLastX = x;
     dragStartY = dragLastY = y;
 
+    // Right-click or Middle-click drag ALWAYS orbits 3D camera (even directly over the paper!)
+    if (e.button === 1 || e.button === 2) {
+      gestureMode = 'orbit';
+      return;
+    }
+
     // Decide 1-finger gesture: Direct Drag-to-Fold/Unfold vs Orbit!
     const inDirectDrag = state.mode === 'free' && state.freeInteractMode === 'drag' && lastCam;
     if (inDirectDrag) {
@@ -706,7 +976,7 @@ export function initOrigamiStudio() {
         syncPlaybackControls();
       }
       const grabRadius = isMobileViewport() ? 42 : 30;
-      const snap = findNearestSnap(x, y, w, h, grabRadius);
+      const snap = findNearestSnap(x, y, w, h, grabRadius, null, false);
       const raw = screenToPlane(x, y, w, h, lastCam, v3(0, 0, 0), v3(0, 0, 1));
       const onPaper = snap || isPointOnPaper(raw);
 
@@ -715,14 +985,20 @@ export function initOrigamiStudio() {
         const unfoldPair = findUnfoldPairForPoint(startPt);
         gestureMode = 'drag-fold';
         state.dragFoldActive = true;
+        state.dragShiftFlip = !!e.shiftKey;
+        state.dragAltFree = !!e.altKey;
+        state.dragCancelZone = false;
+        state.lastSnapId = '';
         state.dragStart = startPt;
         state.dragCurrent = startPt;
         state.dragSnapLabel = '';
         state.dragCrease = null;
+        state.dragMirrorCrease = null;
         state.dragLiveStep = null;
         state.dragLiveCompiled = null;
         state.dragIsUnfold = false;
         state.dragUnfoldGhost = unfoldPair ? unfoldPair.unfolded : null;
+        lastDragSx = x; lastDragSy = y; lastDragW = w; lastDragH = h;
         updateFreeBanner();
         return;
       }
@@ -733,6 +1009,12 @@ export function initOrigamiStudio() {
   });
 
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  // Desktop double-click on canvas smoothly resets & auto-frames camera
+  canvas.addEventListener('dblclick', () => {
+    if (state.mode === 'free' && state.freeInteractMode === 'line') return;
+    resetCameraView(true);
+  });
 
   canvas.addEventListener('pointermove', (e) => {
     const { x, y, w, h } = getCanvasCoords(e);
@@ -762,6 +1044,8 @@ export function initOrigamiStudio() {
 
     // 2. Direct Drag-to-Fold live 3D folding!
     if (gestureMode === 'drag-fold' && state.dragFoldActive) {
+      state.dragShiftFlip = !!e.shiftKey;
+      state.dragAltFree = !!e.altKey;
       if (Math.hypot(x - dragStartX, y - dragStartY) > 6) dragMoved = true;
       updateDirectDragFold(x, y, w, h);
       updateFreeBanner();
@@ -786,7 +1070,7 @@ export function initOrigamiStudio() {
     // 4. Desktop hover feedback when idle in Free Studio
     if (activePointers.size === 0 && state.mode === 'free' && !state.playing && lastCam) {
       const worldPt = screenToPlane(x, y, w, h, lastCam, v3(0, 0, 0), v3(0, 0, 1));
-      const snap = findNearestSnap(x, y, w, h, 26);
+      const snap = findNearestSnap(x, y, w, h, 26, null, state.freeInteractMode === 'line');
       state.hoveredSnap = snap;
       state.hoverWorld = snap ? v3(snap.x, snap.y, 0) : (worldPt ? v3(worldPt.x, worldPt.y, 0) : null);
 
@@ -807,7 +1091,7 @@ export function initOrigamiStudio() {
 
     // Finish Direct Drag-to-Fold!
     if (gestureMode === 'drag-fold') {
-      const stepToCommit = state.dragLiveStep;
+      const stepToCommit = state.dragCancelZone ? null : state.dragLiveStep;
       const startT = state.dragLiveT;
       gestureMode = 'none';
       if (stepToCommit && dragMoved) {
@@ -820,9 +1104,29 @@ export function initOrigamiStudio() {
       return;
     }
 
-    // Tap in Precision Line-Fold Mode
+    // Quick right-click (without drag) cancels active Free Studio draft
+    if (gestureMode === 'orbit' && dragStartButton === 2 && !dragMoved && state.mode === 'free') {
+      if (activePointers.size === 0) gestureMode = 'none';
+      clearInteractiveDraft();
+      updateFreeBanner();
+      return;
+    }
+
+    // Mobile double-tap on empty space (or non-line mode) resets camera smoothly
     const wasTap = gestureMode === 'orbit' && !dragMoved && (e.button === 0 || e.pointerType === 'touch');
     if (activePointers.size === 0) gestureMode = 'none';
+
+    if (wasTap && e.pointerType === 'touch' && !(state.mode === 'free' && state.freeInteractMode === 'line')) {
+      const now = performance.now();
+      if (now - lastTapTime < 320 && Math.hypot(x - lastTapX, y - lastTapY) < 36) {
+        lastTapTime = 0;
+        resetCameraView(true);
+        return;
+      }
+      lastTapTime = now;
+      lastTapX = x;
+      lastTapY = y;
+    }
 
     if (!wasTap || state.mode !== 'free' || state.freeInteractMode !== 'line' || !lastCam) return;
 
@@ -831,7 +1135,7 @@ export function initOrigamiStudio() {
       state.playing = false;
     }
 
-    const snap = findNearestSnap(x, y, w, h, isMobileViewport() ? 36 : 24);
+    const snap = findNearestSnap(x, y, w, h, isMobileViewport() ? 36 : 24, null, true);
     const raw = screenToPlane(x, y, w, h, lastCam, v3(0, 0, 0), v3(0, 0, 1));
     const pt = snap ? v3(snap.x, snap.y, 0) : (raw ? v3(raw.x, raw.y, 0) : null);
     if (!pt) return;
@@ -852,21 +1156,21 @@ export function initOrigamiStudio() {
       const side = d > 0 ? 1 : -1;
       const toolNamesEn = { valley: 'Valley Fold', mountain: 'Mountain Fold', precrease: 'Pre-crease', pleat: 'Pleat Fold' };
       const toolNamesKo = { valley: '계곡 접기', mountain: '산 접기', precrease: '접었다 펴기', pleat: '계단 접기' };
-      addFreeStep({
-        type: state.freeTool,
+      const paperBounds = computePaperBounds(state.compiledPlanar.finalState.faces);
+      const built = buildFoldStepWithMirror({
+        toolType: state.freeTool,
         p1: [state.pickP1.x, state.pickP1.y],
         p2: [state.pickP2.x, state.pickP2.y],
         side,
         angleDeg: state.freeAngle,
         layerScope: state.freeLayerScope,
         offset: state.freePleatOffset,
-        label: `${toolNamesEn[state.freeTool]} (${state.freeAngle}°)`,
         labelEn: `${toolNamesEn[state.freeTool]} (${state.freeAngle}°)`,
         labelKo: `${toolNamesKo[state.freeTool]} (${state.freeAngle}°)`,
-        technique: toolNamesEn[state.freeTool],
         techniqueEn: toolNamesEn[state.freeTool],
         techniqueKo: toolNamesKo[state.freeTool],
-      });
+      }, paperBounds);
+      addFreeStep(built.step);
     }
   }
 
@@ -891,17 +1195,91 @@ export function initOrigamiStudio() {
   }, { passive: false });
 
   window.addEventListener('keydown', (e) => {
-    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
-    if (e.key === 'Escape' && state.mode === 'free') {
-      clearInteractiveDraft();
-      updateFreeBanner();
-    } else if (e.code === 'Space') {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
+
+    // Live Shift / Alt modulation during active Drag-to-Fold
+    if (state.dragFoldActive && (e.key === 'Shift' || e.key === 'Alt')) {
+      const nextShift = e.key === 'Shift' ? true : state.dragShiftFlip;
+      const nextAlt = e.key === 'Alt' ? true : state.dragAltFree;
+      if (nextShift !== state.dragShiftFlip || nextAlt !== state.dragAltFree) {
+        state.dragShiftFlip = nextShift;
+        state.dragAltFree = nextAlt;
+        updateDirectDragFold(lastDragSx, lastDragSy, lastDragW, lastDragH);
+        updateFreeBanner();
+      }
+      return;
+    }
+
+    const key = e.key.toLowerCase();
+
+    if (e.key === 'Escape') {
+      if ($('shortcuts-modal')?.classList.contains('open')) { closeShortcutsModal(); return; }
+      if ($('gif-modal')?.classList.contains('open')) { closeGifModal(); return; }
+      if (state.sheetOpen) { closeSheet(); return; }
+      if (state.mode === 'free') {
+        clearInteractiveDraft();
+        updateFreeBanner();
+      }
+      return;
+    }
+
+    if (e.key === '?' || (e.shiftKey && e.key === '/')) {
+      e.preventDefault();
+      if ($('shortcuts-modal')?.classList.contains('open')) closeShortcutsModal();
+      else openShortcutsModal();
+      return;
+    }
+
+    // Undo / Redo
+    if ((e.metaKey || e.ctrlKey) && (key === 'z' || key === 'y') && state.mode === 'free') {
+      e.preventDefault();
+      if (key === 'y' || e.shiftKey) redoFreeStep();
+      else undoFreeStep();
+      return;
+    }
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+    if (e.code === 'Space') {
       e.preventDefault();
       togglePlay();
-    } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z' && state.mode === 'free') {
+    } else if (e.key === 'ArrowLeft') {
       e.preventDefault();
-      if (e.shiftKey) redoFreeStep();
-      else undoFreeStep();
+      jumpToStep(Math.max(0, Math.ceil(state.playPos) - 1));
+    } else if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      jumpToStep(Math.min(getActiveModel().steps.length, Math.floor(state.playPos) + 1));
+    } else if (key === 'l') {
+      toggleLoopPlay();
+    } else if (key === 'r') {
+      resetCameraView(true);
+    } else if (key === '1') {
+      applyCameraPreset(0.52, 0.38, 4.7);
+    } else if (key === '2') {
+      applyCameraPreset(0.0, 0.02, 4.4);
+    } else if (key === '3') {
+      applyCameraPreset(1.48, 0.22, 4.7);
+    } else if (key === '4') {
+      applyCameraPreset(0.0, 1.32, 4.8);
+    } else if (state.mode === 'free') {
+      if (key === 'v') { state.freeTool = 'valley'; clearInteractiveDraft(); syncUI(); }
+      else if (key === 'm') { state.freeTool = 'mountain'; clearInteractiveDraft(); syncUI(); }
+      else if (key === 'x') { toggleMirrorFold(); }
+      else if (key === 'u') { unfoldLastFreeStep(); }
+      else if (key === 'f') { applyQuickMacro('flip'); }
+      else if (key === 'g') { applyQuickMacro('rot45'); }
+    }
+  });
+
+  window.addEventListener('keyup', (e) => {
+    if (state.dragFoldActive && (e.key === 'Shift' || e.key === 'Alt')) {
+      const nextShift = e.key === 'Shift' ? false : state.dragShiftFlip;
+      const nextAlt = e.key === 'Alt' ? false : state.dragAltFree;
+      if (nextShift !== state.dragShiftFlip || nextAlt !== state.dragAltFree) {
+        state.dragShiftFlip = nextShift;
+        state.dragAltFree = nextAlt;
+        updateDirectDragFold(lastDragSx, lastDragSy, lastDragW, lastDragH);
+        updateFreeBanner();
+      }
     }
   });
 
@@ -979,6 +1357,7 @@ export function initOrigamiStudio() {
         $('color-front').value = p.front;
         $('color-back').value = p.back;
         renderPaperSwatches();
+        saveFreeDraft();
       });
       container.appendChild(sw);
     }
@@ -988,6 +1367,7 @@ export function initOrigamiStudio() {
     const list = $('step-pills');
     const model = getLocalizedActiveModel();
     list.innerHTML = '';
+    state.lastScrolledStepIdx = -1;
 
     if (model.displaySteps.length === 0) {
       list.innerHTML = `<div class="empty-steps">${t('emptyTimelineHint')}</div>`;
@@ -1028,13 +1408,18 @@ export function initOrigamiStudio() {
     const canUnfold = (state.compiledPlanar?.activeFoldCount || 0) > 0;
     if (state.freeInteractMode === 'drag') {
       if (state.dragFoldActive) {
-        if (state.dragIsUnfold) {
+        if (state.dragCancelZone) {
+          textEl.textContent = t('bannerDragCancel');
+        } else if (state.dragIsUnfold) {
           textEl.textContent = t('bannerDragUnfoldActive');
         } else {
-          textEl.textContent = state.dragSnapLabel
+          const base = state.dragSnapLabel
             ? t('bannerDragActiveSnap', state.dragSnapLabel)
             : t('bannerDragActiveNoSnap');
+          textEl.textContent = isMobileViewport() ? base : `${base} · ${t('bannerDragShiftHint')}`;
         }
+      } else if (state.freeMirror) {
+        textEl.textContent = t('bannerDragMirrorHint');
       } else if (canUnfold) {
         textEl.textContent = isMobileViewport()
           ? t('bannerDragUnfoldMobile')
@@ -1063,6 +1448,10 @@ export function initOrigamiStudio() {
       ? `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg> ${t('btnPause')}`
       : `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="6,4 20,12 6,20"/></svg> ${t('btnPlay')}`;
     $('mob-play').textContent = state.playing ? t('mobPause') : t('mobPlay');
+    if ($('btn-loop')) {
+      $('btn-loop').classList.toggle('active', state.loopPlay);
+      $('btn-loop').setAttribute('aria-pressed', String(state.loopPlay));
+    }
 
     const curIdx = total > 0 ? Math.min(total - 1, Math.floor(state.playPos)) : -1;
     const stepObj = curIdx >= 0 ? model.displaySteps[curIdx] : null;
@@ -1076,6 +1465,14 @@ export function initOrigamiStudio() {
     for (let i = 0; i < pills.length; i++) {
       pills[i].classList.toggle('active', i === curIdx);
       pills[i].classList.toggle('done', i < curIdx);
+    }
+    if (curIdx >= 0 && curIdx < pills.length && curIdx !== state.lastScrolledStepIdx) {
+      state.lastScrolledStepIdx = curIdx;
+      try {
+        pills[curIdx].scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+      } catch {
+        // Fallback for older browsers
+      }
     }
   }
 
@@ -1097,6 +1494,30 @@ export function initOrigamiStudio() {
     const canUnfold = (state.compiledPlanar?.activeFoldCount || 0) > 0;
     $('mob-unfold').disabled = !canUnfold;
     $('mob-undo').disabled = state.freeSteps.length === 0;
+  }
+
+  function syncQuickRail() {
+    const rail = $('free-quick-rail');
+    if (!rail) return;
+    rail.style.display = state.mode === 'free' ? 'flex' : 'none';
+    if (state.mode !== 'free') return;
+
+    const isMountain = state.freeTool === 'mountain';
+    const qDir = $('qbtn-dir');
+    if (qDir) {
+      qDir.classList.toggle('is-mountain', isMountain);
+      qDir.classList.toggle('is-valley', !isMountain);
+      const ico = qDir.querySelector('.q-ico');
+      if (ico) ico.textContent = isMountain ? '▼' : '▲';
+      const lbl = $('qbtn-dir-lbl');
+      if (lbl) lbl.textContent = isMountain ? t('quickMountain') : t('quickValley');
+    }
+    if ($('qbtn-mirror')) {
+      $('qbtn-mirror').classList.toggle('active-mirror', state.freeMirror);
+    }
+    const canUnfold = (state.compiledPlanar?.activeFoldCount || 0) > 0;
+    if ($('qbtn-unfold')) $('qbtn-unfold').disabled = !canUnfold;
+    if ($('qbtn-undo')) $('qbtn-undo').disabled = state.freeSteps.length === 0;
   }
 
   function syncUI() {
@@ -1135,6 +1556,11 @@ export function initOrigamiStudio() {
       $('btn-undo').disabled = state.freeSteps.length === 0;
       $('btn-redo').disabled = state.freeRedo.length === 0;
       $('pleat-offset-row').style.display = state.freeTool === 'pleat' ? 'flex' : 'none';
+      if ($('btn-mirror-toggle')) {
+        $('btn-mirror-toggle').classList.toggle('active', state.freeMirror);
+        $('btn-mirror-toggle').setAttribute('aria-pressed', String(state.freeMirror));
+        if ($('mirror-state-pill')) $('mirror-state-pill').textContent = state.freeMirror ? 'ON' : 'OFF';
+      }
       document.querySelectorAll('[data-tool]').forEach(b => {
         b.classList.toggle('active', b.dataset.tool === state.freeTool);
       });
@@ -1149,6 +1575,7 @@ export function initOrigamiStudio() {
     updateFreeBanner();
     syncPlaybackControls();
     syncMobileBar();
+    syncQuickRail();
   }
 
   // ---- Main Animation & Render Loop ----
@@ -1165,12 +1592,19 @@ export function initOrigamiStudio() {
     return { w, h };
   }
 
+  function getEffectiveDragTool() {
+    if (state.dragShiftFlip && (state.freeTool === 'valley' || state.freeTool === 'mountain')) {
+      return state.freeTool === 'mountain' ? 'valley' : 'mountain';
+    }
+    return state.freeTool;
+  }
+
   function renderAll() {
     const { w, h } = resizeCanvas();
 
     // If user is actively Drag-to-Folding or Drag-to-Unfolding, render the LIVE 3D mesh directly!
     let frame;
-    if (state.dragFoldActive && state.dragLiveCompiled) {
+    if (state.dragFoldActive && state.dragLiveCompiled && !state.dragCancelZone) {
       frame = state.dragLiveCompiled.evaluate(state.dragLiveT);
     } else {
       frame = evaluateAtPos(state.playPos);
@@ -1180,6 +1614,11 @@ export function initOrigamiStudio() {
       && state.freeInteractMode !== 'orbit'
       && (state.dragFoldActive || (!state.playing && state.playPos >= state.freeSteps.length - 0.01));
 
+    const effTool = state.dragFoldActive ? getEffectiveDragTool() : state.freeTool;
+    const mirrorAxisX = (showFreeOverlay && state.freeMirror && state.compiledPlanar)
+      ? computePaperBounds(state.compiledPlanar.finalState.faces).center.x
+      : null;
+
     const freeOverlay = showFreeOverlay
       ? {
           interactMode: state.freeInteractMode,
@@ -1188,16 +1627,20 @@ export function initOrigamiStudio() {
           p1: state.pickP1,
           p2: state.pickP2,
           hoverWorld: state.hoverWorld,
-          foldType: state.freeTool === 'mountain' ? 'mountain' : 'valley',
+          foldType: effTool === 'mountain' ? 'mountain' : 'valley',
           hoverSide: state.hoverSide,
           previewFaces: computeFreePreviewFaces(),
           dragStart: state.dragStart,
           dragCurrent: state.dragCurrent,
           dragSnapLabel: state.dragSnapLabel,
           dragCrease: state.dragCrease,
+          dragMirrorCrease: state.dragMirrorCrease,
+          mirrorAxisX,
           dragIsUnfold: state.dragIsUnfold,
           unfoldGhost: state.dragUnfoldGhost,
           unfoldGhostLabel: t('unfoldBadge'),
+          dragCancelZone: state.dragCancelZone,
+          dragCancelLabel: t('dragCancelBadge'),
         }
       : null;
 
@@ -1227,7 +1670,14 @@ export function initOrigamiStudio() {
 
     const total = getActiveModel().steps.length;
     if (state.playing && total > 0) {
-      if (state.stepHoldTimer > 0) {
+      if (state.loopHoldTimer > 0) {
+        state.loopHoldTimer -= dt;
+        if (state.loopHoldTimer <= 0) {
+          state.playPos = 0;
+          state.stepHoldTimer = 0;
+          syncPlaybackControls();
+        }
+      } else if (state.stepHoldTimer > 0) {
         state.stepHoldTimer -= dt;
       } else {
         const prevStep = Math.floor(state.playPos);
@@ -1235,7 +1685,11 @@ export function initOrigamiStudio() {
         const nextStep = Math.floor(state.playPos);
         if (state.playPos >= total) {
           state.playPos = total;
-          state.playing = false;
+          if (state.loopPlay) {
+            state.loopHoldTimer = 1.05 / state.playbackSpeed;
+          } else {
+            state.playing = false;
+          }
         } else if (nextStep > prevStep) {
           state.playPos = nextStep;
           state.stepHoldTimer = state.pauseBetweenSteps / state.playbackSpeed;
@@ -1483,8 +1937,8 @@ export function initOrigamiStudio() {
   });
 
   // View & color controls
-  $('color-front').addEventListener('input', (e) => { state.frontColor = e.target.value; renderPaperSwatches(); });
-  $('color-back').addEventListener('input', (e) => { state.backColor = e.target.value; renderPaperSwatches(); });
+  $('color-front').addEventListener('input', (e) => { state.frontColor = e.target.value; renderPaperSwatches(); saveFreeDraft(); });
+  $('color-back').addEventListener('input', (e) => { state.backColor = e.target.value; renderPaperSwatches(); saveFreeDraft(); });
   $('toggle-guides').addEventListener('click', (e) => { state.showGuides = !state.showGuides; e.currentTarget.classList.toggle('active', state.showGuides); });
   $('toggle-cp').addEventListener('click', (e) => { state.showCP = !state.showCP; e.currentTarget.classList.toggle('active', state.showCP); $('cp-overlay').style.display = state.showCP ? 'block' : 'none'; });
   $('toggle-wire').addEventListener('click', (e) => { state.showWireframe = !state.showWireframe; e.currentTarget.classList.toggle('active', state.showWireframe); });
@@ -1497,6 +1951,16 @@ export function initOrigamiStudio() {
     const dist = state.mode === 'free' ? idealDistanceForRadius(bounds.radius) : fallbackDist;
     state.targetCamera = { yaw, pitch, distance: dist, target: bounds.center };
   }
+  function resetCameraView(notify = false) {
+    if (state.mode === 'free') {
+      applyCameraPreset(0.0, 0.14, 4.4);
+    } else {
+      const m = getActiveModel();
+      const c = m.defaultCamera || { yaw: 0.52, pitch: 0.38, distance: 4.7 };
+      applyCameraPreset(c.yaw, c.pitch, c.distance);
+    }
+    if (notify) showToast(t('toastCamReset'), 1400);
+  }
   $('cam-3d').addEventListener('click', () => applyCameraPreset(0.52, 0.38, 4.7));
   $('cam-front').addEventListener('click', () => applyCameraPreset(0.0, 0.02, 4.4));
   $('cam-side').addEventListener('click', () => applyCameraPreset(1.48, 0.22, 4.7));
@@ -1505,14 +1969,19 @@ export function initOrigamiStudio() {
 
   // Playback controls
   $('btn-play').addEventListener('click', togglePlay);
-  $('btn-restart').addEventListener('click', () => { state.playPos = 0; state.playing = true; state.stepHoldTimer = 0; syncPlaybackControls(); });
+  $('btn-restart').addEventListener('click', () => { state.playPos = 0; state.playing = true; state.stepHoldTimer = 0; state.loopHoldTimer = 0; syncPlaybackControls(); });
   $('btn-prev').addEventListener('click', () => jumpToStep(Math.max(0, Math.ceil(state.playPos) - 1)));
   $('btn-next').addEventListener('click', () => jumpToStep(Math.min(getActiveModel().steps.length, Math.floor(state.playPos) + 1)));
   $('timeline-slider').addEventListener('input', (e) => { state.playing = false; state.playPos = Number(e.target.value); syncPlaybackControls(); });
   $('speed-select').addEventListener('change', (e) => { state.playbackSpeed = Number(e.target.value); });
+  if ($('btn-loop')) $('btn-loop').addEventListener('click', toggleLoopPlay);
 
   // Free Fold Studio controls
-  $('free-title-input').addEventListener('input', (e) => { state.freeTitle = e.target.value; $('work-title-badge').textContent = state.freeTitle || t('defaultFreeTitle'); });
+  $('free-title-input').addEventListener('input', (e) => {
+    state.freeTitle = e.target.value;
+    $('work-title-badge').textContent = state.freeTitle || t('defaultFreeTitle');
+    saveFreeDraft();
+  });
   document.querySelectorAll('[data-interact]').forEach(btn => {
     btn.addEventListener('click', () => {
       state.freeInteractMode = btn.dataset.interact;
@@ -1527,6 +1996,7 @@ export function initOrigamiStudio() {
       syncUI();
     });
   });
+  if ($('btn-mirror-toggle')) $('btn-mirror-toggle').addEventListener('click', toggleMirrorFold);
   $('btn-unfold-last').addEventListener('click', unfoldLastFreeStep);
   $('btn-unfold-all').addEventListener('click', unfoldAllFreeSteps);
   $('free-angle-slider').addEventListener('input', (e) => { state.freeAngle = Number(e.target.value); $('free-angle-val').textContent = `${state.freeAngle}°`; });
@@ -1545,6 +2015,27 @@ export function initOrigamiStudio() {
   $('btn-redo').addEventListener('click', redoFreeStep);
   $('btn-reset').addEventListener('click', resetFreeStudio);
 
+  // Floating Quick-Action Rail controls (in Free Fold Canvas)
+  if ($('qbtn-dir')) {
+    $('qbtn-dir').addEventListener('click', () => {
+      state.freeTool = state.freeTool === 'mountain' ? 'valley' : 'mountain';
+      clearInteractiveDraft();
+      syncUI();
+    });
+  }
+  if ($('qbtn-mirror')) $('qbtn-mirror').addEventListener('click', toggleMirrorFold);
+  if ($('qbtn-flip')) $('qbtn-flip').addEventListener('click', () => applyQuickMacro('flip'));
+  if ($('qbtn-rot')) $('qbtn-rot').addEventListener('click', () => applyQuickMacro('rot45'));
+  if ($('qbtn-unfold')) $('qbtn-unfold').addEventListener('click', unfoldLastFreeStep);
+  if ($('qbtn-undo')) $('qbtn-undo').addEventListener('click', undoFreeStep);
+
+  // Keyboard Shortcuts Modal controls
+  if ($('btn-shortcuts')) $('btn-shortcuts').addEventListener('click', openShortcutsModal);
+  if ($('shortcuts-close-btn')) $('shortcuts-close-btn').addEventListener('click', closeShortcutsModal);
+  if ($('shortcuts-modal')) {
+    $('shortcuts-modal').addEventListener('click', (e) => { if (e.target === $('shortcuts-modal')) closeShortcutsModal(); });
+  }
+
   // GIF Export Modal controls
   $('btn-open-gif').addEventListener('click', openGifModal);
   $('gif-close-btn').addEventListener('click', closeGifModal);
@@ -1559,6 +2050,7 @@ export function initOrigamiStudio() {
   });
 
   // ---- Bootstrap ----
+  loadFreeDraft();
   applyStaticI18n();
   renderPaperSwatches();
   selectLibraryModel('model-crane', true);

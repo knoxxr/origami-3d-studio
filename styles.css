@@ -1420,3 +1420,310 @@ html, body {
     grid-template-columns: 1fr;
   }
 }
+
+/* ============================================================================
+   ERGONOMIC CONTROLS: Quick Rail, Mirror Toggle, Loop, Toast & Shortcuts Modal
+   ============================================================================ */
+.shortcuts-btn {
+  width: 28px;
+  padding: 5px 0;
+  text-align: center;
+  font-weight: 700;
+}
+
+@media (max-width: 900px) {
+  .shortcuts-btn { display: none; }
+}
+
+.mirror-toggle-card {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  border: 1.5px solid var(--border, rgba(120, 100, 80, 0.22));
+  background: var(--card, #ffffff);
+  color: var(--foreground, #1f1b18);
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+
+.mirror-toggle-card:hover {
+  border-color: rgba(147, 51, 234, 0.5);
+}
+
+.mirror-toggle-card.active {
+  border-color: #9333ea;
+  background: rgba(147, 51, 234, 0.08);
+}
+
+.mirror-icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: rgba(147, 51, 234, 0.12);
+  color: #7e22ce;
+  display: grid;
+  place-items: center;
+  font-size: 14px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.mirror-toggle-card.active .mirror-icon {
+  background: #9333ea;
+  color: #ffffff;
+}
+
+.mirror-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.mirror-title {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.mirror-sub {
+  font-size: 10.5px;
+  color: var(--muted-foreground, #78716c);
+  margin-top: 1px;
+}
+
+.mirror-pill {
+  font-size: 10px;
+  font-weight: 800;
+  padding: 2px 6px;
+  border-radius: 99px;
+  background: var(--background, #f3ede4);
+  color: var(--muted-foreground, #78716c);
+  letter-spacing: 0.04em;
+}
+
+.mirror-toggle-card.active .mirror-pill {
+  background: #9333ea;
+  color: #ffffff;
+}
+
+/* Floating Quick-Action Rail in Free Fold Canvas */
+.quick-rail {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 12;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 5px;
+  border-radius: 12px;
+  background: var(--card, rgba(255, 253, 249, 0.90));
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--border, rgba(120, 100, 80, 0.18));
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
+}
+
+.quick-btn {
+  width: 50px;
+  height: 44px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--foreground, #292524);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  cursor: pointer;
+  transition: all 0.14s ease;
+  padding: 2px;
+}
+
+.quick-btn:hover:not(:disabled) {
+  background: var(--background, #f3ede4);
+  border-color: rgba(207, 68, 54, 0.35);
+}
+
+.quick-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.quick-btn .q-ico {
+  font-size: 14px;
+  line-height: 1.1;
+  font-weight: 700;
+}
+
+.quick-btn .q-lbl {
+  font-size: 10px;
+  font-weight: 650;
+  color: var(--muted-foreground, #57534e);
+  white-space: nowrap;
+}
+
+.quick-btn.is-valley {
+  background: rgba(37, 99, 235, 0.10);
+  border-color: rgba(37, 99, 235, 0.35);
+  color: #2563eb;
+}
+
+.quick-btn.is-valley .q-lbl { color: #2563eb; }
+
+.quick-btn.is-mountain {
+  background: rgba(220, 38, 38, 0.10);
+  border-color: rgba(220, 38, 38, 0.35);
+  color: #dc2626;
+}
+
+.quick-btn.is-mountain .q-lbl { color: #dc2626; }
+
+.quick-btn.active-mirror {
+  background: rgba(147, 51, 234, 0.14);
+  border-color: #9333ea;
+  color: #7e22ce;
+}
+
+.quick-btn.active-mirror .q-lbl { color: #7e22ce; }
+
+/* Timeline Loop Button */
+.loop-btn {
+  width: 30px;
+  height: 28px;
+  flex-shrink: 0;
+  border: 1px solid var(--border, rgba(120, 100, 80, 0.22));
+  background: var(--background, #f7f3ec);
+  color: var(--muted-foreground, #6b6560);
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: all 0.14s ease;
+}
+
+.loop-btn:hover {
+  border-color: rgba(207, 68, 54, 0.45);
+  color: var(--foreground, #1f1b18);
+}
+
+.loop-btn.active {
+  background: #cf4436;
+  border-color: #cf4436;
+  color: #ffffff;
+}
+
+/* Status Toast */
+.studio-toast {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translate(-50%, -12px);
+  background: rgba(28, 25, 23, 0.90);
+  color: #faf7f2;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  z-index: 25;
+  white-space: nowrap;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.22);
+}
+
+.studio-toast.show {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+/* Keyboard Shortcuts Modal */
+.shortcuts-card {
+  max-width: 470px;
+}
+
+.shortcuts-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sc-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 8px;
+  border-radius: 7px;
+  background: var(--background, #f7f3ec);
+  font-size: 12px;
+}
+
+.sc-keys {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--muted-foreground, #57534e);
+}
+
+.sc-keys kbd {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 5px;
+  border: 1px solid var(--border, rgba(120, 100, 80, 0.28));
+  background: var(--card, #ffffff);
+  color: var(--foreground, #1f1b18);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.08);
+}
+
+.sidebar.sheet-dragging {
+  transition: none !important;
+}
+
+@media (max-width: 768px) {
+  .quick-desktop-only {
+    display: none !important;
+  }
+
+  .quick-rail {
+    left: auto;
+    right: 10px;
+    top: 48px;
+    transform: none;
+    flex-direction: row;
+    padding: 3px;
+    gap: 3px;
+    border-radius: 9px;
+  }
+
+  .quick-btn {
+    width: auto;
+    height: 30px;
+    padding: 0 8px;
+    flex-direction: row;
+    gap: 3px;
+    border-radius: 7px;
+  }
+
+  .quick-btn .q-ico {
+    font-size: 12px;
+  }
+
+  .quick-btn .q-lbl {
+    font-size: 10.5px;
+  }
+}
+

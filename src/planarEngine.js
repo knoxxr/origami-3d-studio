@@ -770,19 +770,55 @@ export function compilePlanarTimeline(initialConfig, steps) {
 }
 
 /**
+ * 2D segment-segment strict interior intersection (in XY plane).
+ */
+function segIntersect2D(a, b, c, d) {
+  const rx = b.x - a.x, ry = b.y - a.y;
+  const sx = d.x - c.x, sy = d.y - c.y;
+  const denom = rx * sy - ry * sx;
+  if (Math.abs(denom) < 1e-5) return null;
+  const qpx = c.x - a.x, qpy = c.y - a.y;
+  const t = (qpx * sy - qpy * sx) / denom;
+  const u = (qpx * ry - qpy * rx) / denom;
+  if (t > 0.04 && t < 0.96 && u > 0.04 && u < 0.96) {
+    return {
+      x: a.x + t * rx,
+      y: a.y + t * ry,
+      z: (a.z + t * (b.z - a.z) + c.z + u * (d.z - c.z)) * 0.5,
+    };
+  }
+  return null;
+}
+
+/**
  * Collect magnetic snap points from the current paper state (vertices, edge
- * midpoints, and paper center) for intuitive Free Fold Studio interaction.
+ * midpoints, crease/edge intersections, quarter divisions, and paper center)
+ * for intuitive Free Fold Studio interaction.
  */
 export function computeSnapPoints(paperState) {
   const raw = [];
+  const priority = { vertex: 4, center: 3, intersect: 2, midpoint: 1, quarter: 0 };
   const addUnique = (p, kind) => {
     for (const q of raw) {
       if (Math.hypot(q.x - p.x, q.y - p.y) < 0.03) {
-        if (kind === 'vertex') q.kind = 'vertex';
+        if ((priority[kind] || 0) > (priority[q.kind] || 0)) q.kind = kind;
         return;
       }
     }
     raw.push({ x: p.x, y: p.y, z: p.z || 0, kind });
+  };
+
+  // Deduplicate unique 2D edges for fast intersection & quarter-point detection
+  const uniqueEdges = [];
+  const addEdge = (a, b) => {
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    if (len < 0.06) return;
+    for (const e of uniqueEdges) {
+      const sameDir = Math.hypot(e.a.x - a.x, e.a.y - a.y) < 0.025 && Math.hypot(e.b.x - b.x, e.b.y - b.y) < 0.025;
+      const revDir = Math.hypot(e.a.x - b.x, e.a.y - b.y) < 0.025 && Math.hypot(e.b.x - a.x, e.b.y - a.y) < 0.025;
+      if (sameDir || revDir) return;
+    }
+    uniqueEdges.push({ a, b, len });
   };
 
   for (const f of paperState.faces) {
@@ -792,8 +828,10 @@ export function computeSnapPoints(paperState) {
       const b = f.pts[(i + 1) % n];
       addUnique(a, 'vertex');
       addUnique({ x: (a.x + b.x) * 0.5, y: (a.y + b.y) * 0.5, z: (a.z + b.z) * 0.5 }, 'midpoint');
+      addEdge(a, b);
     }
   }
+
   // Add centroid of bounding box
   let minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;
   for (const p of raw) {
@@ -805,5 +843,25 @@ export function computeSnapPoints(paperState) {
   if (raw.length > 0) {
     addUnique({ x: (minX + maxX) * 0.5, y: (minY + maxY) * 0.5, z: 0 }, 'center');
   }
+
+  // Crease / edge interior intersections (capped for complex folded meshes)
+  const edgeLimit = Math.min(uniqueEdges.length, 48);
+  for (let i = 0; i < edgeLimit; i++) {
+    for (let j = i + 1; j < edgeLimit; j++) {
+      const hit = segIntersect2D(uniqueEdges[i].a, uniqueEdges[i].b, uniqueEdges[j].a, uniqueEdges[j].b);
+      if (hit) addUnique(hit, 'intersect');
+    }
+  }
+
+  // Quarter divisions (1/4 and 3/4) on sufficiently long edges
+  const paperSpan = Math.max(0.4, Math.hypot(maxX - minX, maxY - minY));
+  const minQuarterLen = Math.max(0.55, paperSpan * 0.34);
+  for (let i = 0; i < edgeLimit; i++) {
+    const { a, b, len } = uniqueEdges[i];
+    if (len < minQuarterLen) continue;
+    addUnique({ x: a.x + (b.x - a.x) * 0.25, y: a.y + (b.y - a.y) * 0.25, z: a.z + (b.z - a.z) * 0.25 }, 'quarter');
+    addUnique({ x: a.x + (b.x - a.x) * 0.75, y: a.y + (b.y - a.y) * 0.75, z: a.z + (b.z - a.z) * 0.75 }, 'quarter');
+  }
+
   return raw;
 }

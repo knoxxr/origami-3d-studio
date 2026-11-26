@@ -406,7 +406,9 @@ function drawFreeStudioOverlay(ctx, width, height, cam, overlay, isDark) {
   const {
     interactMode = 'drag',
     snapPoints, hoveredSnap, p1, p2, hoverWorld, foldType, hoverSide, previewFaces,
-    dragStart, dragCurrent, dragSnapLabel, dragCrease, dragIsUnfold = false, unfoldGhost = null, unfoldGhostLabel = 'Unfold',
+    dragStart, dragCurrent, dragSnapLabel, dragCrease, dragMirrorCrease = null,
+    mirrorAxisX = null, dragIsUnfold = false, unfoldGhost = null, unfoldGhostLabel = 'Unfold',
+    dragCancelZone = false, dragCancelLabel = 'Release to cancel',
   } = overlay;
   ctx.save();
 
@@ -415,12 +417,67 @@ function drawFreeStudioOverlay(ctx, width, height, cam, overlay, isDark) {
   const unfoldAccent = '#0d9488';
   const accent = dragIsUnfold ? unfoldAccent : foldAccent;
 
+  // Subtle vertical symmetry axis guide when Mirror Fold mode is ON
+  if (mirrorAxisX !== null && Number.isFinite(mirrorAxisX)) {
+    const mTop = projectPoint(worldToCamera(v3(mirrorAxisX, 1.35, 0), cam), width, height);
+    const mBot = projectPoint(worldToCamera(v3(mirrorAxisX, -1.35, 0), cam), width, height);
+    ctx.save();
+    ctx.beginPath();
+    ctx.setLineDash([4, 5]);
+    ctx.strokeStyle = 'rgba(147, 51, 234, 0.45)';
+    ctx.lineWidth = 1.6;
+    ctx.moveTo(mTop.x, mTop.y);
+    ctx.lineTo(mBot.x, mBot.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  // Helper to draw a snap marker cleanly by kind
+  const drawSnapDot = (pr, sp, isHighlight, showMinor) => {
+    if (!showMinor && (sp.kind === 'quarter' || sp.kind === 'intersect')) return;
+    if (sp.kind === 'intersect') {
+      const r = isHighlight ? 7.5 : 4.2;
+      ctx.beginPath();
+      ctx.moveTo(pr.x, pr.y - r);
+      ctx.lineTo(pr.x + r, pr.y);
+      ctx.lineTo(pr.x, pr.y + r);
+      ctx.lineTo(pr.x - r, pr.y);
+      ctx.closePath();
+      ctx.fillStyle = isHighlight ? '#9333ea' : 'rgba(255,255,255,0.9)';
+      ctx.fill();
+      ctx.lineWidth = isHighlight ? 2.2 : 1.4;
+      ctx.strokeStyle = isHighlight ? '#ffffff' : '#9333ea';
+      ctx.stroke();
+      return;
+    }
+    if (sp.kind === 'quarter') {
+      const r = isHighlight ? 7 : 3.1;
+      ctx.beginPath();
+      ctx.arc(pr.x, pr.y, r, 0, Math.PI * 2);
+      ctx.fillStyle = isHighlight ? foldAccent : 'rgba(255,255,255,0.72)';
+      ctx.fill();
+      ctx.lineWidth = isHighlight ? 2.2 : 1.1;
+      ctx.strokeStyle = isHighlight ? '#ffffff' : 'rgba(120,113,108,0.68)';
+      ctx.stroke();
+      return;
+    }
+    const r = isHighlight ? 9 : sp.kind === 'center' ? 5.5 : sp.kind === 'vertex' ? 5.2 : 4.2;
+    ctx.beginPath();
+    ctx.arc(pr.x, pr.y, r, 0, Math.PI * 2);
+    ctx.fillStyle = isHighlight ? foldAccent : 'rgba(255,255,255,0.88)';
+    ctx.fill();
+    ctx.lineWidth = isHighlight ? 2.6 : 1.5;
+    ctx.strokeStyle = isHighlight ? '#ffffff' : (sp.kind === 'center' ? '#cf4436' : foldAccent);
+    ctx.stroke();
+  };
+
   // ---- Mode A: Direct Drag-to-Fold / Unfold visual cues ----
   if (interactMode === 'drag') {
     // 1. When idle (not dragging), show subtle, touch-friendly glowing grab rings on corners & midpoints
     if (!dragStart && snapPoints) {
       for (const sp of snapPoints) {
-        if (sp.kind === 'center') continue;
+        if (sp.kind === 'center' || sp.kind === 'quarter' || sp.kind === 'intersect') continue;
         const pr = projectPoint(worldToCamera(sp, cam), width, height);
         const isHov = hoveredSnap && hoveredSnap === sp;
         const rad = isHov ? 9.5 : sp.kind === 'vertex' ? 6.5 : 4.2;
@@ -443,19 +500,13 @@ function drawFreeStudioOverlay(ctx, width, height, cam, overlay, isDark) {
 
     // 2. While actively dragging a corner/edge to fold or unfold!
     if (dragStart && dragCurrent) {
-      // Show snap targets so the user sees where they can snap to!
-      if (!dragIsUnfold && snapPoints) {
+      // Show snap targets (including intersections & quarter points) so the user sees magnetic targets!
+      if (!dragIsUnfold && !dragCancelZone && snapPoints) {
         for (const sp of snapPoints) {
           if (Math.hypot(sp.x - dragStart.x, sp.y - dragStart.y) < 0.08) continue;
           const pr = projectPoint(worldToCamera(sp, cam), width, height);
           const isTarget = Math.hypot(sp.x - dragCurrent.x, sp.y - dragCurrent.y) < 0.03;
-          ctx.beginPath();
-          ctx.arc(pr.x, pr.y, isTarget ? 9 : sp.kind === 'center' ? 5.5 : 4.5, 0, Math.PI * 2);
-          ctx.fillStyle = isTarget ? foldAccent : 'rgba(255,255,255,0.86)';
-          ctx.fill();
-          ctx.lineWidth = isTarget ? 2.6 : 1.5;
-          ctx.strokeStyle = isTarget ? '#ffffff' : (sp.kind === 'center' ? '#cf4436' : foldAccent);
-          ctx.stroke();
+          drawSnapDot(pr, sp, isTarget, true);
         }
       }
 
@@ -486,10 +537,13 @@ function drawFreeStudioOverlay(ctx, width, height, cam, overlay, isDark) {
         ctx.restore();
       }
 
-      // Dashed fold crease line along perpendicular bisector
-      if (dragCrease) {
-        const c1 = projectPoint(worldToCamera(dragCrease.p1, cam), width, height);
-        const c2 = projectPoint(worldToCamera(dragCrease.p2, cam), width, height);
+      // Dashed fold crease line(s) along perpendicular bisector (+ optional mirror crease!)
+      const drawCreasePair = (cr, alpha = 1) => {
+        if (!cr) return;
+        const c1 = projectPoint(worldToCamera(cr.p1, cam), width, height);
+        const c2 = projectPoint(worldToCamera(cr.p2, cam), width, height);
+        ctx.save();
+        ctx.globalAlpha = alpha;
         ctx.beginPath();
         ctx.setLineDash([]);
         ctx.strokeStyle = 'rgba(255,255,255,0.85)';
@@ -506,6 +560,11 @@ function drawFreeStudioOverlay(ctx, width, height, cam, overlay, isDark) {
         ctx.lineTo(c2.x, c2.y);
         ctx.stroke();
         ctx.setLineDash([]);
+        ctx.restore();
+      };
+      if (!dragCancelZone) {
+        drawCreasePair(dragCrease, 1.0);
+        drawCreasePair(dragMirrorCrease, 0.72);
       }
 
       // Curved directional arrow from dragStart -> dragCurrent
@@ -517,7 +576,7 @@ function drawFreeStudioOverlay(ctx, width, height, cam, overlay, isDark) {
       const dy = sB.y - sA.y;
       const dLen = Math.hypot(dx, dy);
 
-      if (dLen > 14) {
+      if (!dragCancelZone && dLen > 14) {
         const cx = mx - dy * 0.16;
         const cy = my + dx * 0.16 - 12;
 
@@ -547,27 +606,43 @@ function drawFreeStudioOverlay(ctx, width, height, cam, overlay, isDark) {
         ctx.fill();
       }
 
-      // Start point dot
+      // Start point dot (or amber cancel halo when dragged back to origin)
+      if (dragCancelZone) {
+        ctx.beginPath();
+        ctx.arc(sA.x, sA.y, 16, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(217, 119, 6, 0.18)';
+        ctx.fill();
+        ctx.setLineDash([4, 3]);
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = '#d97706';
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
       ctx.beginPath();
       ctx.arc(sA.x, sA.y, 6, 0, Math.PI * 2);
-      ctx.fillStyle = dragIsUnfold ? unfoldAccent : '#cf4436';
+      ctx.fillStyle = dragCancelZone ? '#d97706' : (dragIsUnfold ? unfoldAccent : '#cf4436');
       ctx.fill();
       ctx.strokeStyle = '#ffffff';
       ctx.lineWidth = 2;
       ctx.stroke();
 
-      // Magnetic snap label badge near target
-      if (dragSnapLabel) {
+      // Badge near cursor (cancel badge OR magnetic snap label)
+      const badgeText = dragCancelZone ? dragCancelLabel : dragSnapLabel;
+      if (badgeText) {
         ctx.font = '600 11.5px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-        const tw = ctx.measureText(dragSnapLabel).width;
+        const tw = ctx.measureText(badgeText).width;
         const bx = Math.min(width - tw - 22, Math.max(10, sB.x - tw * 0.5 - 8));
         const by = Math.max(12, sB.y - 34);
-        ctx.fillStyle = dragIsUnfold ? 'rgba(13, 148, 136, 0.94)' : 'rgba(24, 22, 20, 0.88)';
+        ctx.fillStyle = dragCancelZone
+          ? 'rgba(180, 83, 9, 0.94)'
+          : dragIsUnfold
+            ? 'rgba(13, 148, 136, 0.94)'
+            : 'rgba(24, 22, 20, 0.88)';
         roundRect(ctx, bx, by, tw + 16, 22, 11);
         ctx.fill();
         ctx.fillStyle = '#ffffff';
         ctx.textBaseline = 'middle';
-        ctx.fillText(dragSnapLabel, bx + 8, by + 11.5);
+        ctx.fillText(badgeText, bx + 8, by + 11.5);
       }
     }
 

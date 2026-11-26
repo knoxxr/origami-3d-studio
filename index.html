@@ -36,6 +36,7 @@
           <button id="toggle-cp" class="icon-chip active" data-i18n="toggleCp" data-i18n-title="toggleCpTitle" title="Show 2D Crease Pattern">CP 2D</button>
           <button id="toggle-wire" class="icon-chip" data-i18n="toggleWire" data-i18n-title="toggleWireTitle" title="Toggle wireframe">Wire</button>
         </div>
+        <button id="btn-shortcuts" class="icon-chip shortcuts-btn" data-i18n-title="shortcutsBtnTitle" title="Keyboard Shortcuts (?)" aria-label="Keyboard Shortcuts">?</button>
         <button id="btn-lang-toggle" class="lang-toggle" title="Switch Language (English / 한국어)" aria-label="Switch Language">
           <span class="lang-opt active" data-lang-opt="en">EN</span>
           <span class="lang-sep">/</span>
@@ -132,6 +133,17 @@
                 <span class="tool-btn-sub" data-i18n="toolPleatSub">Valley + Mountain pair</span>
               </button>
             </div>
+          </div>
+
+          <div>
+            <button id="btn-mirror-toggle" class="mirror-toggle-card" aria-pressed="false">
+              <span class="mirror-icon" aria-hidden="true">⇆</span>
+              <span class="mirror-text">
+                <span class="mirror-title" data-i18n="mirrorToggleLabel">Mirror Fold (Left ↔ Right)</span>
+                <span class="mirror-sub" data-i18n="mirrorToggleSub">Fold both sides symmetrically at once</span>
+              </span>
+              <span id="mirror-state-pill" class="mirror-pill">OFF</span>
+            </button>
           </div>
 
           <div>
@@ -238,6 +250,31 @@
             </div>
           </div>
 
+          <!-- Free Fold Floating Quick-Action Rail -->
+          <div id="free-quick-rail" class="quick-rail" style="display:none;" role="toolbar" aria-label="Quick Fold Actions">
+            <button id="qbtn-dir" class="quick-btn quick-desktop-only" data-i18n-title="quickDirTitle" title="Toggle Valley / Mountain (V / M)">
+              <span class="q-ico">▲</span><span class="q-lbl" id="qbtn-dir-lbl" data-i18n="quickValley">Valley</span>
+            </button>
+            <button id="qbtn-mirror" class="quick-btn" data-i18n-title="quickMirrorTitle" title="Toggle Left-Right Mirror Fold (X)">
+              <span class="q-ico">⇆</span><span class="q-lbl" data-i18n="quickMirror">Mirror</span>
+            </button>
+            <button id="qbtn-flip" class="quick-btn" data-i18n-title="quickFlipTitle" title="Flip Paper Over (F)">
+              <span class="q-ico">⇅</span><span class="q-lbl" data-i18n="quickFlip">Flip</span>
+            </button>
+            <button id="qbtn-rot" class="quick-btn" data-i18n-title="quickRotTitle" title="Rotate Paper 45° (G)">
+              <span class="q-ico">↻</span><span class="q-lbl" data-i18n="quickRot">45°</span>
+            </button>
+            <button id="qbtn-unfold" class="quick-btn quick-desktop-only" data-i18n-title="quickUnfoldTitle" title="Unfold Last Fold (U)" disabled>
+              <span class="q-ico">📖</span><span class="q-lbl" data-i18n="quickUnfold">Unfold</span>
+            </button>
+            <button id="qbtn-undo" class="quick-btn quick-desktop-only" data-i18n-title="quickUndoTitle" title="Undo (Ctrl+Z)" disabled>
+              <span class="q-ico">↩</span><span class="q-lbl" data-i18n="quickUndo">Undo</span>
+            </button>
+          </div>
+
+          <!-- Subtle Status Toast -->
+          <div id="studio-toast" class="studio-toast" role="status" aria-live="polite"></div>
+
           <!-- Free Studio Floating Guide Pill -->
           <div id="free-guide-banner" class="free-banner">
             <span class="free-dot"></span>
@@ -287,6 +324,7 @@
               <button id="btn-next" class="btn-secondary" aria-label="Next step">▶</button>
             </div>
             <input id="timeline-slider" type="range" min="0" max="10" step="0.01" value="0" />
+            <button id="btn-loop" class="loop-btn" data-i18n-title="loopTitle" title="Loop Playback (L)" aria-pressed="false" aria-label="Loop Playback">↻</button>
             <select id="speed-select" class="speed-select" aria-label="Playback speed">
               <option value="0.5">0.5x</option>
               <option value="1" selected>1.0x</option>
@@ -371,6 +409,36 @@
           <span id="gif-meta-info" class="gif-meta-info"></span>
           <a id="gif-download-link" class="btn-primary" style="text-decoration:none;" data-i18n="gifDownload">Download GIF (.gif)</a>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Keyboard & Mouse Shortcuts Modal -->
+  <div id="shortcuts-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="shortcuts-modal-title">
+    <div class="modal-card shortcuts-card">
+      <div class="modal-header">
+        <div>
+          <h2 id="shortcuts-modal-title" class="modal-title" data-i18n="shortcutsTitle">Keyboard &amp; Mouse Shortcuts</h2>
+          <div class="modal-sub" data-i18n="shortcutsSub">Quick controls for faster 3D folding &amp; playback</div>
+        </div>
+        <button id="shortcuts-close-btn" class="modal-close" aria-label="Close">×</button>
+      </div>
+      <div class="shortcuts-grid">
+        <div class="sc-row"><span class="sc-keys"><kbd>Space</kbd></span><span data-i18n="scPlay">Play / Pause timeline</span></div>
+        <div class="sc-row"><span class="sc-keys"><kbd>←</kbd><kbd>→</kbd></span><span data-i18n="scSteps">Previous / Next step</span></div>
+        <div class="sc-row"><span class="sc-keys"><kbd>L</kbd></span><span data-i18n="scLoop">Toggle loop playback</span></div>
+        <div class="sc-row"><span class="sc-keys"><kbd>Right-Drag</kbd></span><span data-i18n="scOrbit">Orbit 3D camera anytime (even over paper)</span></div>
+        <div class="sc-row"><span class="sc-keys"><kbd>Dbl-Click</kbd></span><span data-i18n="scDblClick">Reset &amp; auto-frame camera</span></div>
+        <div class="sc-row"><span class="sc-keys"><kbd>R</kbd></span><span data-i18n="scCamReset">Reset camera view</span></div>
+        <div class="sc-row"><span class="sc-keys"><kbd>1</kbd>–<kbd>4</kbd></span><span data-i18n="scCamPresets">3D / Front / Side / Top view</span></div>
+        <div class="sc-row"><span class="sc-keys"><kbd>V</kbd> / <kbd>M</kbd></span><span data-i18n="scValleyMtn">Switch Valley / Mountain fold</span></div>
+        <div class="sc-row"><span class="sc-keys"><kbd>Shift</kbd> + Drag</span><span data-i18n="scShiftDrag">Flip Valley ↔ Mountain while dragging</span></div>
+        <div class="sc-row"><span class="sc-keys"><kbd>Alt</kbd> + Drag</span><span data-i18n="scAltDrag">Hold to disable magnetic snap</span></div>
+        <div class="sc-row"><span class="sc-keys"><kbd>X</kbd></span><span data-i18n="scMirror">Toggle Mirror Fold (Left ↔ Right)</span></div>
+        <div class="sc-row"><span class="sc-keys"><kbd>U</kbd></span><span data-i18n="scUnfold">Unfold last fold (keep crease)</span></div>
+        <div class="sc-row"><span class="sc-keys"><kbd>F</kbd> / <kbd>G</kbd></span><span data-i18n="scFlipRot">Flip paper / Rotate 45°</span></div>
+        <div class="sc-row"><span class="sc-keys"><kbd>Ctrl/⌘+Z</kbd></span><span data-i18n="scUndoRedo">Undo / Redo step</span></div>
+        <div class="sc-row"><span class="sc-keys"><kbd>Esc</kbd></span><span data-i18n="scEsc">Cancel active drag or close modal</span></div>
       </div>
     </div>
   </div>

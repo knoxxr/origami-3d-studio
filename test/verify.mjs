@@ -220,5 +220,38 @@ console.log('\n=== 5. Verifying Unfold Engine (unfoldLast, unfoldAll, flip+unfol
   console.log('  [OK] unfoldLast, unfoldAll, flip+unfold conjugation, and topUnfoldHint verified');
 }
 
+console.log('\n=== 6. Verifying Expanded Snap Points (Quarter & Intersections) & Mirror Fold ===');
+{
+  const tlCross = compilePlanarTimeline({ width: 2, height: 2 }, [
+    { type: 'precrease', p1: [-1, -1], p2: [1, 1], side: -1, label: 'Diag 1' },
+    { type: 'precrease', p1: [-1, 1], p2: [1, -1], side: -1, label: 'Diag 2' },
+    { type: 'precrease', p1: [-0.5, -1], p2: [-0.5, 1], side: -1, label: 'Quarter line' },
+  ]);
+  const snaps = computeSnapPoints(tlCross.finalState);
+  const quarters = snaps.filter(s => s.kind === 'quarter');
+  const hasCenter = snaps.some(s => Math.hypot(s.x, s.y) < 0.04);
+  const hasQuarterHit = snaps.some(s => Math.abs(s.x + 0.5) < 0.04 && Math.abs(s.y - 1) < 0.04);
+  assert(quarters.length >= 4, `Expected >= 4 quarter snap points, got ${quarters.length}`);
+  assert(hasCenter, 'Expected center snap point');
+  assert(hasQuarterHit, 'Expected (-0.5, 1) quarter snap point');
+
+  // Verify symmetric Mirror Fold (both top corners folded simultaneously via multiFold)
+  const tlMirror = compilePlanarTimeline({ width: 2, height: 2 }, [
+    {
+      type: 'multiFold',
+      label: 'Mirror Valley Fold',
+      folds: [
+        { p1: [0, 1], p2: [1, 0], side: 1, foldType: 'valley', angleDeg: 180 },
+        { p1: [0, 1], p2: [-1, 0], side: -1, foldType: 'valley', angleDeg: 180 },
+      ],
+    },
+  ]);
+  assert(tlMirror.activeFoldCount === 1, 'Mirror fold counts as 1 unfoldable step');
+  assert(tlMirror.finalState.faces.length >= 3, 'Mirror fold splits both corners cleanly');
+  const midM = tlMirror.evaluate(0, 0.5);
+  assert(midM.faces.every(f => f.pts.every(p => Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z))), 'Mirror fold mid-frame finite');
+  console.log(`  [OK] Expanded snaps (${snaps.length} total, ${quarters.length} quarter) & symmetric Mirror Fold verified`);
+}
+
 console.log(`\nSUMMARY: ${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
