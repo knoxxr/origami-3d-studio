@@ -253,5 +253,45 @@ console.log('\n=== 6. Verifying Expanded Snap Points (Quarter & Intersections) &
   console.log(`  [OK] Expanded snaps (${snaps.length} total, ${quarters.length} quarter) & symmetric Mirror Fold verified`);
 }
 
+console.log('\n=== 7. Verifying Double-Sided Folding (Front vs Back, Back Pleat, Back Pre-crease, Back Layer Scope) ===');
+{
+  // 1. Valley (+Z) vs Mountain (-Z) mid-frame Z sign verification
+  const tlFront = compilePlanarTimeline({ width: 2, height: 2 }, [
+    { type: 'valley', p1: [0, -1], p2: [0, 1], side: -1, angleDeg: 180, label: 'Front Half' },
+  ]);
+  const tlBack = compilePlanarTimeline({ width: 2, height: 2 }, [
+    { type: 'mountain', p1: [0, -1], p2: [0, 1], side: -1, angleDeg: 180, label: 'Back Half' },
+  ]);
+  const midFrontZs = tlFront.evaluate(0, 0.5).faces.flatMap(f => f.pts.map(p => p.z));
+  const midBackZs = tlBack.evaluate(0, 0.5).faces.flatMap(f => f.pts.map(p => p.z));
+  assert(Math.max(...midFrontZs) > 0.5, 'Front (valley) fold lifts flap into +Z');
+  assert(Math.min(...midBackZs) < -0.5, 'Back (mountain) fold folds flap into -Z');
+
+  // 2. Back-side Pleat (foldDir: 'mountain') folds toward -Z & records mountain crease first
+  const tlBackPleat = compilePlanarTimeline({ width: 2, height: 2 }, [
+    { type: 'pleat', foldDir: 'mountain', p1: [-0.25, -1], p2: [-0.25, 1], side: -1, offset: 0.25, angleDeg: 165 },
+  ]);
+  const bpMidZs = tlBackPleat.evaluate(0, 0.5).faces.flatMap(f => f.pts.map(p => p.z));
+  assert(Math.min(...bpMidZs) < -0.1, 'Back-side pleat moves into -Z');
+  assert(tlBackPleat.finalState.creases[0]?.type === 'mountain', 'Back-side pleat first crease is mountain');
+
+  // 3. Back-side Pre-crease (foldDir: 'mountain') folds into -Z then returns flat with mountain crease
+  const tlBackPre = compilePlanarTimeline({ width: 2, height: 2 }, [
+    { type: 'precrease', foldDir: 'mountain', creaseType: 'mountain', p1: [0, -1], p2: [0, 1], side: -1 },
+  ]);
+  const preSwingZs = tlBackPre.evaluate(0, 0.24).faces.flatMap(f => f.pts.map(p => p.z));
+  const prePeakZs = tlBackPre.evaluate(0, 0.5).faces.flatMap(f => f.pts.map(p => p.z));
+  assert(Math.min(...preSwingZs) < -0.7 && Math.min(...prePeakZs) < -0.35, 'Back-side pre-crease folds into -Z');
+  assert(tlBackPre.finalState.creases[0]?.type === 'mountain', 'Back-side pre-crease leaves mountain crease');
+
+  // 4. Back Layer only ('bottom') after stacking 2 layers
+  const tlBottomLayer = compilePlanarTimeline({ width: 2, height: 2 }, [
+    { type: 'valley', p1: [0, -1], p2: [0, 1], side: -1, angleDeg: 180 },
+    { type: 'mountain', p1: [-1, 0], p2: [0, 0], side: 1, angleDeg: 180, layerScope: 'bottom' },
+  ]);
+  assert(tlBottomLayer.finalState.faces.length === 3, `Expected 3 faces (top stays whole, bottom splits into 2), got ${tlBottomLayer.finalState.faces.length}`);
+  console.log('  [OK] Front/Back folds, back pleat, back pre-crease, and bottom-layer scope verified');
+}
+
 console.log(`\nSUMMARY: ${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

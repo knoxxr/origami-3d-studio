@@ -315,7 +315,7 @@ export function compilePlanarStep(baseState, step) {
     return { evaluate, endState };
   }
 
-  // 4. PLEAT FOLD (Two parallel creases: Valley + Mountain simultaneously)
+  // 4. PLEAT FOLD (Two parallel creases: Valley + Mountain simultaneously, front or back side)
   if (type === 'pleat') {
     const p1 = v3(step.p1[0], step.p1[1], step.p1[2] || 0);
     const p2 = v3(step.p2[0], step.p2[1], step.p2[2] || 0);
@@ -327,9 +327,12 @@ export function compilePlanarStep(baseState, step) {
     const q1 = add(p1, shiftVec);
     const q2 = add(p2, shiftVec);
     const angleDeg = Math.abs(step.angleDeg ?? 180);
-    const firstSign = side; // first crease is valley
+    const isBackPleat = step.foldDir === 'mountain' || step.creaseType === 'mountain';
+    const firstType = isBackPleat ? 'mountain' : 'valley';
+    const secondType = isBackPleat ? 'valley' : 'mountain';
+    const firstSign = (isBackPleat ? -1 : 1) * side;
     const targetAng1 = firstSign * (angleDeg * Math.PI) / 180;
-    const targetAng2 = -targetAng1; // second crease is mountain (opposite)
+    const targetAng2 = -targetAng1; // second crease is opposite
 
     const eligible = filterLayerEligible(baseState.faces, side, p1, planeNormal, step.layerScope || 'all');
     const pieces = []; // group: 0 = stationary, 1 = middle strip, 2 = far region
@@ -343,7 +346,7 @@ export function compilePlanarStep(baseState, step) {
       }
       const s1 = splitPolygonByPlane(f.pts, f.uvs, p1, planeNormal);
       const seg1 = extractCreaseSegmentUV(s1.pos, s1.neg, p1, planeNormal);
-      if (seg1) addedCreases.push({ ...seg1, type: 'valley' });
+      if (seg1) addedCreases.push({ ...seg1, type: firstType });
 
       const stay1 = side > 0 ? s1.neg : s1.pos;
       const move1 = side > 0 ? s1.pos : s1.neg;
@@ -351,7 +354,7 @@ export function compilePlanarStep(baseState, step) {
       if (move1) {
         const s2 = splitPolygonByPlane(move1.pts, move1.uvs, q1, planeNormal);
         const seg2 = extractCreaseSegmentUV(s2.pos, s2.neg, q1, planeNormal);
-        if (seg2) addedCreases.push({ ...seg2, type: 'mountain' });
+        if (seg2) addedCreases.push({ ...seg2, type: secondType });
 
         const midStrip = side > 0 ? s2.neg : s2.pos;
         const farRegion = side > 0 ? s2.pos : s2.neg;
@@ -361,9 +364,10 @@ export function compilePlanarStep(baseState, step) {
     }
 
     const maxAll = Math.max(...pieces.map(p => p.layer), 0);
+    const minAll = Math.min(...pieces.map(p => p.layer), 0);
     const guides = [
-      { p1, p2, type: 'valley' },
-      { p1: q1, p2: q2, type: 'mountain' },
+      { p1, p2, type: firstType },
+      { p1: q1, p2: q2, type: secondType },
     ];
 
     const evaluate = (t) => {
@@ -377,7 +381,9 @@ export function compilePlanarStep(baseState, step) {
           return { pts: pc.pts, uvs: pc.uvs, layer: pc.layer };
         }
         if (pc.group === 1) {
-          const layer = (e > 0.6 && angleDeg >= 165) ? maxAll + 1 + (maxAll - pc.layer) : pc.layer;
+          const layer = (e > 0.6 && angleDeg >= 165)
+            ? (isBackPleat ? minAll - 1 - (pc.layer - minAll) : maxAll + 1 + (maxAll - pc.layer))
+            : pc.layer;
           return {
             pts: pc.pts.map(p => rotateAroundAxis(p, p1, axis, a1)),
             uvs: pc.uvs,
@@ -385,7 +391,9 @@ export function compilePlanarStep(baseState, step) {
           };
         }
         // Group 2: first rotate around p1 by a1, then around q1Moved by a2 (stays parallel!)
-        const layer = (e > 0.6 && angleDeg >= 165) ? maxAll + 3 + pc.layer : pc.layer;
+        const layer = (e > 0.6 && angleDeg >= 165)
+          ? (isBackPleat ? minAll - 3 - (pc.layer - minAll) : maxAll + 3 + pc.layer)
+          : pc.layer;
         return {
           pts: pc.pts.map(p => {
             const pMid = rotateAroundAxis(p, p1, axis, a1);
@@ -418,9 +426,9 @@ export function compilePlanarStep(baseState, step) {
     return { evaluate, endState };
   }
 
-  // 5. VALLEY, MOUNTAIN, or PRECREASE
+  // 5. VALLEY, MOUNTAIN, or PRECREASE (supports both front/valley and back/mountain directions)
   const isPrecrease = type === 'precrease';
-  const foldType = type === 'mountain' ? 'mountain' : 'valley';
+  const foldType = (type === 'mountain' || step.foldDir === 'mountain' || step.creaseType === 'mountain') ? 'mountain' : 'valley';
   const p1 = v3(step.p1[0], step.p1[1], step.p1[2] || 0);
   const p2 = v3(step.p2[0], step.p2[1], step.p2[2] || 0);
   const axis = norm(sub(p2, p1));

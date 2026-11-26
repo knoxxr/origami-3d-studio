@@ -1693,6 +1693,76 @@ html, body {
   transition: none !important;
 }
 
+/* Front / Back Fold Direction Selector & 3-Way Layers & Swap Colors */
+.fold-side-seg {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+}
+
+.fold-side-btn {
+  border: 1.5px solid var(--border, rgba(120, 100, 80, 0.22));
+  background: var(--card, #ffffff);
+  color: var(--muted-foreground, #57534e);
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 7px 6px;
+  border-radius: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.14s ease;
+}
+
+.fold-side-btn.front:hover {
+  border-color: rgba(37, 99, 235, 0.55);
+  color: #2563eb;
+}
+
+.fold-side-btn.front.active {
+  border-color: #2563eb;
+  background: rgba(37, 99, 235, 0.12);
+  color: #1d4ed8;
+  box-shadow: 0 1px 4px rgba(37, 99, 235, 0.18);
+}
+
+.fold-side-btn.back:hover {
+  border-color: rgba(220, 38, 38, 0.55);
+  color: #dc2626;
+}
+
+.fold-side-btn.back.active {
+  border-color: #dc2626;
+  background: rgba(220, 38, 38, 0.12);
+  color: #b91c1c;
+  box-shadow: 0 1px 4px rgba(220, 38, 38, 0.18);
+}
+
+.seg-mini.seg-tri {
+  grid-template-columns: 1fr 1fr 1fr;
+}
+
+.swap-colors-btn {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border, rgba(120, 100, 80, 0.25));
+  background: var(--background, #f6f2eb);
+  color: var(--muted-foreground, #57534e);
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  transition: all 0.14s ease;
+}
+
+.swap-colors-btn:hover {
+  border-color: #cf4436;
+  color: #cf4436;
+  background: rgba(207, 68, 54, 0.08);
+}
+
 @media (max-width: 768px) {
   .quick-desktop-only {
     display: none !important;

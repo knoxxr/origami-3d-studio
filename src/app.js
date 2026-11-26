@@ -51,6 +51,7 @@ export function initOrigamiStudio() {
     freeSteps: [],
     freeRedo: [],
     freeTool: 'valley', // 'valley' | 'mountain' | 'precrease' | 'pleat'
+    freeFoldDir: 'valley', // 'valley' (toward Front +Z) | 'mountain' (toward Back -Z)
     freeInteractMode: 'drag', // 'drag' | 'line' | 'orbit'
     freeAngle: 180,
     freeLayerScope: 'all', // 'all' | 'top'
@@ -250,6 +251,7 @@ export function initOrigamiStudio() {
         frontColor: state.frontColor,
         backColor: state.backColor,
         mirror: state.freeMirror,
+        foldDir: state.freeFoldDir,
       }));
     } catch {
       // Ignore storage quota / private mode restrictions
@@ -274,6 +276,12 @@ export function initOrigamiStudio() {
         if ($('color-back')) $('color-back').value = data.backColor;
       }
       state.freeMirror = !!data.mirror;
+      if (data.foldDir === 'mountain' || data.foldDir === 'valley') {
+        state.freeFoldDir = data.foldDir;
+        if (state.freeTool === 'valley' || state.freeTool === 'mountain') {
+          state.freeTool = data.foldDir;
+        }
+      }
       state.restoredStepCount = data.steps.length;
     } catch {
       // Ignore corrupted localStorage draft
@@ -282,6 +290,38 @@ export function initOrigamiStudio() {
 
   function clearFreeDraft() {
     try { window.localStorage.removeItem(DRAFT_KEY); } catch {}
+  }
+
+  function setFoldDir(dir) {
+    const next = dir === 'mountain' ? 'mountain' : 'valley';
+    state.freeFoldDir = next;
+    if (state.freeTool === 'valley' || state.freeTool === 'mountain') {
+      state.freeTool = next;
+    }
+    clearInteractiveDraft();
+    saveFreeDraft();
+    syncUI();
+  }
+
+  function setFoldTool(tool) {
+    state.freeTool = tool;
+    if (tool === 'valley' || tool === 'mountain') {
+      state.freeFoldDir = tool;
+    }
+    clearInteractiveDraft();
+    saveFreeDraft();
+    syncUI();
+  }
+
+  function swapPaperColors() {
+    const prevFront = state.frontColor;
+    state.frontColor = state.backColor;
+    state.backColor = prevFront;
+    if ($('color-front')) $('color-front').value = state.frontColor;
+    if ($('color-back')) $('color-back').value = state.backColor;
+    renderPaperSwatches();
+    saveFreeDraft();
+    showToast(t('toastSwappedSides'), 1500);
   }
 
   function toggleMirrorFold() {
@@ -590,40 +630,49 @@ export function initOrigamiStudio() {
 
   function applyQuickMacro(macroId) {
     const scope = state.freeLayerScope;
+    const dir = state.freeFoldDir === 'mountain' ? 'mountain' : 'valley';
+    const isBack = dir === 'mountain';
+    const ang = state.freeAngle;
+    const dirWordEn = isBack ? 'Mountain' : 'Valley';
+    const dirWordKo = isBack ? '뒷면(산)' : '앞면(계곡)';
+    const dirTagEn = isBack ? ` (${UI_STRINGS.en.backDirSuffix})` : '';
+    const dirTagKo = isBack ? ` (${UI_STRINGS.ko.backDirSuffix})` : '';
+    const techEn = isBack ? 'Mountain Fold' : 'Valley Fold';
+    const techKo = isBack ? '뒷면(산) 접기' : '앞면(계곡) 접기';
     const macros = {
-      diag: { type: 'valley', p1: [-1, -1], p2: [1, 1], side: -1, angleDeg: 180, layerScope: scope, label: 'Diagonal Valley Fold', labelEn: 'Diagonal Valley Fold', labelKo: '대각선 계곡 접기', techniqueEn: 'Valley Fold', techniqueKo: '계곡 접기' },
-      halfV: { type: 'valley', p1: [0, -1], p2: [0, 1], side: -1, angleDeg: 180, layerScope: scope, label: 'Vertical Half Fold', labelEn: 'Vertical Half Fold', labelKo: '세로 반 접기', techniqueEn: 'Valley Fold', techniqueKo: '계곡 접기' },
-      halfH: { type: 'valley', p1: [-1, 0], p2: [1, 0], side: 1, angleDeg: 180, layerScope: scope, label: 'Horizontal Half Fold', labelEn: 'Horizontal Half Fold', labelKo: '가로 반 접기', techniqueEn: 'Valley Fold', techniqueKo: '계곡 접기' },
+      diag: { type: dir, p1: [-1, -1], p2: [1, 1], side: -1, angleDeg: ang, layerScope: scope, label: `Diagonal ${dirWordEn} Fold`, labelEn: `Diagonal ${dirWordEn} Fold`, labelKo: `대각선 ${dirWordKo} 접기`, techniqueEn: techEn, techniqueKo: techKo },
+      halfV: { type: dir, p1: [0, -1], p2: [0, 1], side: -1, angleDeg: ang, layerScope: scope, label: `Vertical Half Fold${dirTagEn}`, labelEn: `Vertical Half Fold${dirTagEn}`, labelKo: `세로 반 접기${dirTagKo}`, techniqueEn: techEn, techniqueKo: techKo },
+      halfH: { type: dir, p1: [-1, 0], p2: [1, 0], side: 1, angleDeg: ang, layerScope: scope, label: `Horizontal Half Fold${dirTagEn}`, labelEn: `Horizontal Half Fold${dirTagEn}`, labelKo: `가로 반 접기${dirTagKo}`, techniqueEn: techEn, techniqueKo: techKo },
       kite: {
-        type: 'multiFold', label: 'Kite Fold', labelEn: 'Kite Fold', labelKo: '아이스크림 접기 (Kite)', techniqueEn: 'Kite Fold', techniqueKo: '아이스크림 접기',
+        type: 'multiFold', label: `Kite Fold${dirTagEn}`, labelEn: `Kite Fold${dirTagEn}`, labelKo: `아이스크림 접기${dirTagKo}`, techniqueEn: 'Kite Fold', techniqueKo: '아이스크림 접기',
         folds: [
-          { p1: [0, 1], p2: [1, 0], side: 1, foldType: 'valley', angleDeg: 180, layerScope: scope },
-          { p1: [-1, 0], p2: [0, 1], side: 1, foldType: 'valley', angleDeg: 180, layerScope: scope },
+          { p1: [0, 1], p2: [1, 0], side: 1, foldType: dir, angleDeg: ang, layerScope: scope },
+          { p1: [-1, 0], p2: [0, 1], side: 1, foldType: dir, angleDeg: ang, layerScope: scope },
         ],
       },
       blintz: {
-        type: 'multiFold', label: 'Blintz Fold (4 Corners)', labelEn: 'Blintz Fold (4 Corners)', labelKo: '방석 접기 (4모서리)', techniqueEn: 'Blintz Fold', techniqueKo: '방석 접기',
+        type: 'multiFold', label: `Blintz Fold${dirTagEn}`, labelEn: `Blintz Fold (4 Corners)${dirTagEn}`, labelKo: `방석 접기 (4모서리)${dirTagKo}`, techniqueEn: 'Blintz Fold', techniqueKo: '방석 접기',
         folds: [
-          { p1: [0, 1], p2: [1, 0], side: 1, foldType: 'valley', angleDeg: 180 },
-          { p1: [-1, 0], p2: [0, 1], side: 1, foldType: 'valley', angleDeg: 180 },
-          { p1: [-1, 0], p2: [0, -1], side: -1, foldType: 'valley', angleDeg: 180 },
-          { p1: [0, -1], p2: [1, 0], side: -1, foldType: 'valley', angleDeg: 180 },
+          { p1: [0, 1], p2: [1, 0], side: 1, foldType: dir, angleDeg: ang, layerScope: scope },
+          { p1: [-1, 0], p2: [0, 1], side: 1, foldType: dir, angleDeg: ang, layerScope: scope },
+          { p1: [-1, 0], p2: [0, -1], side: -1, foldType: dir, angleDeg: ang, layerScope: scope },
+          { p1: [0, -1], p2: [1, 0], side: -1, foldType: dir, angleDeg: ang, layerScope: scope },
         ],
       },
-      pleat: { type: 'pleat', p1: [-0.25, -1], p2: [-0.25, 1], side: -1, offset: state.freePleatOffset, angleDeg: 165, layerScope: scope, label: 'Pleat Fold', labelEn: 'Pleat Fold', labelKo: '계단 접기 (Pleat)', techniqueEn: 'Pleat Fold', techniqueKo: '계단 접기' },
+      pleat: { type: 'pleat', foldDir: dir, p1: [-0.25, -1], p2: [-0.25, 1], side: -1, offset: state.freePleatOffset, angleDeg: Math.min(ang, 165), layerScope: scope, label: `Pleat Fold${dirTagEn}`, labelEn: `Pleat Fold${dirTagEn}`, labelKo: `계단 접기${dirTagKo}`, techniqueEn: 'Pleat Fold', techniqueKo: '계단 접기' },
       flip: { type: 'flip', axis: 'y', label: 'Flip Paper', labelEn: 'Flip Paper', labelKo: '종이 뒤집기', techniqueEn: 'Flip', techniqueKo: '뒤집기' },
       rot90: { type: 'rotate', angleDeg: 90, label: 'Rotate 90°', labelEn: 'Rotate 90°', labelKo: '90° 회전', techniqueEn: 'Rotate', techniqueKo: '회전' },
       rot45: { type: 'rotate', angleDeg: 45, label: 'Rotate 45°', labelEn: 'Rotate 45°', labelKo: '45° 회전', techniqueEn: 'Rotate', techniqueKo: '회전' },
     };
     if (isMobileViewport()) closeSheet();
     if (macroId === 'accordion') {
-      addFreeStep({ type: 'pleat', p1: [-0.45, -1], p2: [-0.45, 1], side: -1, offset: 0.25, angleDeg: 155, layerScope: scope, label: 'Accordion Pleat 1', labelEn: 'Accordion Pleat 1', labelKo: '아코디언 1단 주름', techniqueEn: 'Pleat Fold', techniqueKo: '계단 접기' });
-      addFreeStep({ type: 'pleat', p1: [0.15, -1], p2: [0.15, 1], side: -1, offset: 0.25, angleDeg: 155, layerScope: scope, label: 'Accordion Pleat 2', labelEn: 'Accordion Pleat 2', labelKo: '아코디언 2단 주름', techniqueEn: 'Pleat Fold', techniqueKo: '계단 접기' });
+      addFreeStep({ type: 'pleat', foldDir: dir, p1: [-0.45, -1], p2: [-0.45, 1], side: -1, offset: 0.25, angleDeg: Math.min(ang, 155), layerScope: scope, label: `Accordion Pleat 1${dirTagEn}`, labelEn: `Accordion Pleat 1${dirTagEn}`, labelKo: `아코디언 1단 주름${dirTagKo}`, techniqueEn: 'Pleat Fold', techniqueKo: '계단 접기' });
+      addFreeStep({ type: 'pleat', foldDir: dir, p1: [0.15, -1], p2: [0.15, 1], side: -1, offset: 0.25, angleDeg: Math.min(ang, 155), layerScope: scope, label: `Accordion Pleat 2${dirTagEn}`, labelEn: `Accordion Pleat 2${dirTagEn}`, labelKo: `아코디언 2단 주름${dirTagKo}`, techniqueEn: 'Pleat Fold', techniqueKo: '계단 접기' });
       return;
     }
     if (macroId === 'grid') {
-      addFreeStep({ type: 'precrease', p1: [0, -1], p2: [0, 1], side: -1, label: 'Vertical Center Pre-crease', labelEn: 'Vertical Center Pre-crease', labelKo: '세로 중심 예비선', techniqueEn: 'Pre-crease', techniqueKo: '접었다 펴기' });
-      addFreeStep({ type: 'precrease', p1: [-1, 0], p2: [1, 0], side: 1, label: 'Horizontal Center Pre-crease', labelEn: 'Horizontal Center Pre-crease', labelKo: '가로 중심 예비선', techniqueEn: 'Pre-crease', techniqueKo: '접었다 펴기' });
+      addFreeStep({ type: 'precrease', foldDir: dir, creaseType: dir, p1: [0, -1], p2: [0, 1], side: -1, label: `Vertical Center Pre-crease${dirTagEn}`, labelEn: `Vertical Center Pre-crease${dirTagEn}`, labelKo: `세로 중심 예비선${dirTagKo}`, techniqueEn: 'Pre-crease', techniqueKo: '접었다 펴기' });
+      addFreeStep({ type: 'precrease', foldDir: dir, creaseType: dir, p1: [-1, 0], p2: [1, 0], side: 1, label: `Horizontal Center Pre-crease${dirTagEn}`, labelEn: `Horizontal Center Pre-crease${dirTagEn}`, labelKo: `가로 중심 예비선${dirTagKo}`, techniqueEn: 'Pre-crease', techniqueKo: '접었다 펴기' });
       return;
     }
     const step = macros[macroId];
@@ -704,12 +753,13 @@ export function initOrigamiStudio() {
    */
   function buildFoldStepWithMirror(spec, paperBounds) {
     const {
-      toolType, p1, p2, side, angleDeg, layerScope, offset,
+      toolType, foldDir = 'valley', p1, p2, side, angleDeg, layerScope, offset,
       labelEn, labelKo, techniqueEn, techniqueKo,
     } = spec;
 
     const singleStep = {
       type: toolType,
+      foldDir,
       p1,
       p2,
       side,
@@ -880,14 +930,17 @@ export function initOrigamiStudio() {
     const leftNormal = norm(cross(v3(0, 0, 1), dir));
     const side = dot(sub(state.dragStart, mid), leftNormal) >= 0 ? 1 : -1;
 
+    const effDir = getEffectiveFoldDir();
     const effTool = getEffectiveDragTool();
-    const toolNamesEn = { valley: 'Valley Fold', mountain: 'Mountain Fold', precrease: 'Pre-crease', pleat: 'Pleat Fold' };
-    const toolNamesKo = { valley: '계곡 접기', mountain: '산 접기', precrease: '접었다 펴기', pleat: '계단 접기' };
+    const isBack = effDir === 'mountain';
+    const toolNamesEn = { valley: 'Valley Fold', mountain: 'Mountain Fold', precrease: isBack ? 'Back Pre-crease' : 'Pre-crease', pleat: isBack ? 'Back Pleat Fold' : 'Pleat Fold' };
+    const toolNamesKo = { valley: '앞면(계곡) 접기', mountain: '뒷면(산) 접기', precrease: isBack ? '뒷면 접었다 펴기' : '접었다 펴기', pleat: isBack ? '뒷면 계단 접기' : '계단 접기' };
     const sufEn = snapKey ? ` · ${UI_STRINGS.en[snapKey]}` : '';
     const sufKo = snapKey ? ` · ${UI_STRINGS.ko[snapKey]}` : '';
 
     const built = buildFoldStepWithMirror({
       toolType: effTool,
+      foldDir: effDir,
       p1: [p1.x, p1.y],
       p2: [p2.x, p2.y],
       side,
@@ -1154,21 +1207,25 @@ export function initOrigamiStudio() {
       const d = dot(sub(pt, state.pickP1), nrm);
       if (Math.abs(d) < 0.03) return;
       const side = d > 0 ? 1 : -1;
-      const toolNamesEn = { valley: 'Valley Fold', mountain: 'Mountain Fold', precrease: 'Pre-crease', pleat: 'Pleat Fold' };
-      const toolNamesKo = { valley: '계곡 접기', mountain: '산 접기', precrease: '접었다 펴기', pleat: '계단 접기' };
+      const effDir = state.freeFoldDir;
+      const effTool = (state.freeTool === 'valley' || state.freeTool === 'mountain') ? effDir : state.freeTool;
+      const isBack = effDir === 'mountain';
+      const toolNamesEn = { valley: 'Valley Fold', mountain: 'Mountain Fold', precrease: isBack ? 'Back Pre-crease' : 'Pre-crease', pleat: isBack ? 'Back Pleat Fold' : 'Pleat Fold' };
+      const toolNamesKo = { valley: '앞면(계곡) 접기', mountain: '뒷면(산) 접기', precrease: isBack ? '뒷면 접었다 펴기' : '접었다 펴기', pleat: isBack ? '뒷면 계단 접기' : '계단 접기' };
       const paperBounds = computePaperBounds(state.compiledPlanar.finalState.faces);
       const built = buildFoldStepWithMirror({
-        toolType: state.freeTool,
+        toolType: effTool,
+        foldDir: effDir,
         p1: [state.pickP1.x, state.pickP1.y],
         p2: [state.pickP2.x, state.pickP2.y],
         side,
         angleDeg: state.freeAngle,
         layerScope: state.freeLayerScope,
         offset: state.freePleatOffset,
-        labelEn: `${toolNamesEn[state.freeTool]} (${state.freeAngle}°)`,
-        labelKo: `${toolNamesKo[state.freeTool]} (${state.freeAngle}°)`,
-        techniqueEn: toolNamesEn[state.freeTool],
-        techniqueKo: toolNamesKo[state.freeTool],
+        labelEn: `${toolNamesEn[effTool]} (${state.freeAngle}°)`,
+        labelKo: `${toolNamesKo[effTool]} (${state.freeAngle}°)`,
+        techniqueEn: toolNamesEn[effTool],
+        techniqueKo: toolNamesKo[effTool],
       }, paperBounds);
       addFreeStep(built.step);
     }
@@ -1260,9 +1317,11 @@ export function initOrigamiStudio() {
       applyCameraPreset(1.48, 0.22, 4.7);
     } else if (key === '4') {
       applyCameraPreset(0.0, 1.32, 4.8);
+    } else if (key === '5') {
+      applyCameraPreset(Math.PI, 0.04, 4.4);
     } else if (state.mode === 'free') {
-      if (key === 'v') { state.freeTool = 'valley'; clearInteractiveDraft(); syncUI(); }
-      else if (key === 'm') { state.freeTool = 'mountain'; clearInteractiveDraft(); syncUI(); }
+      if (key === 'v') { setFoldDir('valley'); }
+      else if (key === 'm') { setFoldDir('mountain'); }
       else if (key === 'x') { toggleMirrorFold(); }
       else if (key === 'u') { unfoldLastFreeStep(); }
       else if (key === 'f') { applyQuickMacro('flip'); }
@@ -1487,7 +1546,7 @@ export function initOrigamiStudio() {
     };
     $('mob-interact-toggle').textContent = interactLabels[state.freeInteractMode];
 
-    const isMountain = state.freeTool === 'mountain';
+    const isMountain = state.freeFoldDir === 'mountain';
     const dirBtn = $('mob-fold-dir');
     dirBtn.textContent = isMountain ? t('mobMountain') : t('mobValley');
     dirBtn.classList.toggle('mountain', isMountain);
@@ -1502,7 +1561,7 @@ export function initOrigamiStudio() {
     rail.style.display = state.mode === 'free' ? 'flex' : 'none';
     if (state.mode !== 'free') return;
 
-    const isMountain = state.freeTool === 'mountain';
+    const isMountain = state.freeFoldDir === 'mountain';
     const qDir = $('qbtn-dir');
     if (qDir) {
       qDir.classList.toggle('is-mountain', isMountain);
@@ -1561,12 +1620,18 @@ export function initOrigamiStudio() {
         $('btn-mirror-toggle').setAttribute('aria-pressed', String(state.freeMirror));
         if ($('mirror-state-pill')) $('mirror-state-pill').textContent = state.freeMirror ? 'ON' : 'OFF';
       }
+      document.querySelectorAll('[data-fold-dir]').forEach(b => {
+        b.classList.toggle('active', b.dataset.foldDir === state.freeFoldDir);
+      });
       document.querySelectorAll('[data-tool]').forEach(b => {
         b.classList.toggle('active', b.dataset.tool === state.freeTool);
       });
       document.querySelectorAll('[data-interact]').forEach(b => {
         b.classList.toggle('active', b.dataset.interact === state.freeInteractMode);
       });
+      $('layer-all').classList.toggle('active', state.freeLayerScope === 'all');
+      $('layer-top').classList.toggle('active', state.freeLayerScope === 'top');
+      if ($('layer-bottom')) $('layer-bottom').classList.toggle('active', state.freeLayerScope === 'bottom');
     }
 
     $('cp-overlay').style.display = state.showCP ? 'block' : 'none';
@@ -1592,9 +1657,16 @@ export function initOrigamiStudio() {
     return { w, h };
   }
 
+  function getEffectiveFoldDir() {
+    if (state.dragShiftFlip) {
+      return state.freeFoldDir === 'mountain' ? 'valley' : 'mountain';
+    }
+    return state.freeFoldDir;
+  }
+
   function getEffectiveDragTool() {
-    if (state.dragShiftFlip && (state.freeTool === 'valley' || state.freeTool === 'mountain')) {
-      return state.freeTool === 'mountain' ? 'valley' : 'mountain';
+    if (state.freeTool === 'valley' || state.freeTool === 'mountain') {
+      return getEffectiveFoldDir();
     }
     return state.freeTool;
   }
@@ -1614,7 +1686,7 @@ export function initOrigamiStudio() {
       && state.freeInteractMode !== 'orbit'
       && (state.dragFoldActive || (!state.playing && state.playPos >= state.freeSteps.length - 0.01));
 
-    const effTool = state.dragFoldActive ? getEffectiveDragTool() : state.freeTool;
+    const effDir = state.dragFoldActive ? getEffectiveFoldDir() : state.freeFoldDir;
     const mirrorAxisX = (showFreeOverlay && state.freeMirror && state.compiledPlanar)
       ? computePaperBounds(state.compiledPlanar.finalState.faces).center.x
       : null;
@@ -1627,7 +1699,7 @@ export function initOrigamiStudio() {
           p1: state.pickP1,
           p2: state.pickP2,
           hoverWorld: state.hoverWorld,
-          foldType: effTool === 'mountain' ? 'mountain' : 'valley',
+          foldType: effDir === 'mountain' ? 'mountain' : 'valley',
           hoverSide: state.hoverSide,
           previewFaces: computeFreePreviewFaces(),
           dragStart: state.dragStart,
@@ -1931,14 +2003,13 @@ export function initOrigamiStudio() {
     syncUI();
   });
   $('mob-fold-dir').addEventListener('click', () => {
-    state.freeTool = state.freeTool === 'mountain' ? 'valley' : 'mountain';
-    clearInteractiveDraft();
-    syncUI();
+    setFoldDir(state.freeFoldDir === 'mountain' ? 'valley' : 'mountain');
   });
 
   // View & color controls
   $('color-front').addEventListener('input', (e) => { state.frontColor = e.target.value; renderPaperSwatches(); saveFreeDraft(); });
   $('color-back').addEventListener('input', (e) => { state.backColor = e.target.value; renderPaperSwatches(); saveFreeDraft(); });
+  if ($('btn-swap-colors')) $('btn-swap-colors').addEventListener('click', swapPaperColors);
   $('toggle-guides').addEventListener('click', (e) => { state.showGuides = !state.showGuides; e.currentTarget.classList.toggle('active', state.showGuides); });
   $('toggle-cp').addEventListener('click', (e) => { state.showCP = !state.showCP; e.currentTarget.classList.toggle('active', state.showCP); $('cp-overlay').style.display = state.showCP ? 'block' : 'none'; });
   $('toggle-wire').addEventListener('click', (e) => { state.showWireframe = !state.showWireframe; e.currentTarget.classList.toggle('active', state.showWireframe); });
@@ -1963,6 +2034,7 @@ export function initOrigamiStudio() {
   }
   $('cam-3d').addEventListener('click', () => applyCameraPreset(0.52, 0.38, 4.7));
   $('cam-front').addEventListener('click', () => applyCameraPreset(0.0, 0.02, 4.4));
+  if ($('cam-back')) $('cam-back').addEventListener('click', () => applyCameraPreset(Math.PI, 0.04, 4.4));
   $('cam-side').addEventListener('click', () => applyCameraPreset(1.48, 0.22, 4.7));
   $('cam-top').addEventListener('click', () => applyCameraPreset(0.0, 1.32, 4.8));
   $('cam-spin').addEventListener('click', (e) => { state.autoOrbit = !state.autoOrbit; e.currentTarget.classList.toggle('active', state.autoOrbit); });
@@ -1989,12 +2061,11 @@ export function initOrigamiStudio() {
       syncUI();
     });
   });
+  document.querySelectorAll('[data-fold-dir]').forEach(btn => {
+    btn.addEventListener('click', () => setFoldDir(btn.dataset.foldDir));
+  });
   document.querySelectorAll('[data-tool]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      state.freeTool = btn.dataset.tool;
-      clearInteractiveDraft();
-      syncUI();
-    });
+    btn.addEventListener('click', () => setFoldTool(btn.dataset.tool));
   });
   if ($('btn-mirror-toggle')) $('btn-mirror-toggle').addEventListener('click', toggleMirrorFold);
   $('btn-unfold-last').addEventListener('click', unfoldLastFreeStep);
@@ -2008,8 +2079,15 @@ export function initOrigamiStudio() {
     });
   });
   $('free-pleat-offset').addEventListener('input', (e) => { state.freePleatOffset = Number(e.target.value); $('free-pleat-val').textContent = `${Math.round(state.freePleatOffset * 100)}%`; });
-  $('layer-all').addEventListener('click', () => { state.freeLayerScope = 'all'; $('layer-all').classList.add('active'); $('layer-top').classList.remove('active'); });
-  $('layer-top').addEventListener('click', () => { state.freeLayerScope = 'top'; $('layer-top').classList.add('active'); $('layer-all').classList.remove('active'); });
+  function setLayerScope(scope) {
+    state.freeLayerScope = scope;
+    $('layer-all').classList.toggle('active', scope === 'all');
+    $('layer-top').classList.toggle('active', scope === 'top');
+    if ($('layer-bottom')) $('layer-bottom').classList.toggle('active', scope === 'bottom');
+  }
+  $('layer-all').addEventListener('click', () => setLayerScope('all'));
+  $('layer-top').addEventListener('click', () => setLayerScope('top'));
+  if ($('layer-bottom')) $('layer-bottom').addEventListener('click', () => setLayerScope('bottom'));
   document.querySelectorAll('[data-macro]').forEach(btn => btn.addEventListener('click', () => applyQuickMacro(btn.dataset.macro)));
   $('btn-undo').addEventListener('click', undoFreeStep);
   $('btn-redo').addEventListener('click', redoFreeStep);
@@ -2018,9 +2096,7 @@ export function initOrigamiStudio() {
   // Floating Quick-Action Rail controls (in Free Fold Canvas)
   if ($('qbtn-dir')) {
     $('qbtn-dir').addEventListener('click', () => {
-      state.freeTool = state.freeTool === 'mountain' ? 'valley' : 'mountain';
-      clearInteractiveDraft();
-      syncUI();
+      setFoldDir(state.freeFoldDir === 'mountain' ? 'valley' : 'mountain');
     });
   }
   if ($('qbtn-mirror')) $('qbtn-mirror').addEventListener('click', toggleMirrorFold);

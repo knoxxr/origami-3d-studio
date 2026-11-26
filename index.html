@@ -114,23 +114,31 @@
           </div>
 
           <div>
+            <div class="section-label"><span data-i18n="secFoldSide">Fold Direction (Front / Back)</span></div>
+            <div class="fold-side-seg">
+              <button id="fold-dir-front" class="fold-side-btn front active" data-fold-dir="valley" data-i18n="foldSideFront">▲ Front (Valley)</button>
+              <button id="fold-dir-back" class="fold-side-btn back" data-fold-dir="mountain" data-i18n="foldSideBack">▼ Back (Mountain)</button>
+            </div>
+          </div>
+
+          <div>
             <div class="section-label"><span data-i18n="secTool">Fold Technique</span></div>
             <div class="tool-grid">
               <button class="tool-btn active" data-tool="valley">
                 <span class="tool-btn-name" style="color:#2563eb;" data-i18n="toolValleyName">Valley Fold</span>
-                <span class="tool-btn-sub" data-i18n="toolValleySub">Fold forward (- - -)</span>
+                <span class="tool-btn-sub" data-i18n="toolValleySub">Toward front (- - -)</span>
               </button>
               <button class="tool-btn" data-tool="mountain">
                 <span class="tool-btn-name" style="color:#dc2626;" data-i18n="toolMountainName">Mountain Fold</span>
-                <span class="tool-btn-sub" data-i18n="toolMountainSub">Fold backward (- · -)</span>
+                <span class="tool-btn-sub" data-i18n="toolMountainSub">Toward back (- · -)</span>
               </button>
               <button class="tool-btn" data-tool="precrease">
                 <span class="tool-btn-name" data-i18n="toolPrecreaseName">Pre-crease</span>
-                <span class="tool-btn-sub" data-i18n="toolPrecreaseSub">Fold &amp; unfold crease</span>
+                <span class="tool-btn-sub" data-i18n="toolPrecreaseSub">Front or back crease</span>
               </button>
               <button class="tool-btn" data-tool="pleat">
                 <span class="tool-btn-name" data-i18n="toolPleatName">Pleat Fold</span>
-                <span class="tool-btn-sub" data-i18n="toolPleatSub">Valley + Mountain pair</span>
+                <span class="tool-btn-sub" data-i18n="toolPleatSub">Front or back pleat</span>
               </button>
             </div>
           </div>
@@ -174,9 +182,10 @@
 
             <div>
               <div class="section-label" style="margin-bottom:4px;"><span data-i18n="secLayers">Target Layers</span></div>
-              <div class="seg-mini">
-                <button id="layer-all" class="active" data-i18n="layerAll">All Layers</button>
-                <button id="layer-top" data-i18n="layerTop">Top Layer Only</button>
+              <div class="seg-mini seg-tri">
+                <button id="layer-all" class="active" data-i18n="layerAll">All</button>
+                <button id="layer-top" data-i18n="layerTop">Front</button>
+                <button id="layer-bottom" data-i18n="layerBottom">Back</button>
               </div>
             </div>
           </div>
@@ -216,6 +225,7 @@
             <div id="paper-swatches" style="display:flex;gap:6px;"></div>
             <div class="color-pickers">
               <input id="color-front" type="color" value="#cf4436" data-i18n-title="colorFrontTitle" title="Front color" />
+              <button id="btn-swap-colors" class="swap-colors-btn" data-i18n-title="swapColorsTitle" title="Swap Front ↔ Back sides" aria-label="Swap Front and Back colors">⇄</button>
               <input id="color-back" type="color" value="#f7f1e3" data-i18n-title="colorBackTitle" title="Back color" />
             </div>
           </div>
@@ -244,6 +254,7 @@
             <div class="cam-bar" role="toolbar" aria-label="3D Camera Presets">
               <button id="cam-3d" class="cam-btn" data-i18n="cam3d">3D</button>
               <button id="cam-front" class="cam-btn" data-i18n="camFront">Front</button>
+              <button id="cam-back" class="cam-btn cam-desktop-only" data-i18n="camBack">Back</button>
               <button id="cam-side" class="cam-btn cam-desktop-only" data-i18n="camSide">Side</button>
               <button id="cam-top" class="cam-btn cam-desktop-only" data-i18n="camTop">Top</button>
               <button id="cam-spin" class="cam-btn" data-i18n="camSpin">Spin</button>
@@ -252,8 +263,8 @@
 
           <!-- Free Fold Floating Quick-Action Rail -->
           <div id="free-quick-rail" class="quick-rail" style="display:none;" role="toolbar" aria-label="Quick Fold Actions">
-            <button id="qbtn-dir" class="quick-btn quick-desktop-only" data-i18n-title="quickDirTitle" title="Toggle Valley / Mountain (V / M)">
-              <span class="q-ico">▲</span><span class="q-lbl" id="qbtn-dir-lbl" data-i18n="quickValley">Valley</span>
+            <button id="qbtn-dir" class="quick-btn quick-desktop-only" data-i18n-title="quickDirTitle" title="Fold Toward Front (Valley) / Back (Mountain) (V / M)">
+              <span class="q-ico">▲</span><span class="q-lbl" id="qbtn-dir-lbl" data-i18n="quickValley">Front</span>
             </button>
             <button id="qbtn-mirror" class="quick-btn" data-i18n-title="quickMirrorTitle" title="Toggle Left-Right Mirror Fold (X)">
               <span class="q-ico">⇆</span><span class="q-lbl" data-i18n="quickMirror">Mirror</span>
@@ -307,7 +318,7 @@
           <!-- Free Studio Quick Row -->
           <div id="mob-bar-free" class="mob-bar-row" style="display:none;">
             <button id="mob-interact-toggle" class="mob-pill-accent">✋ Drag</button>
-            <button id="mob-fold-dir" class="mob-pill-dir">Valley ▲</button>
+            <button id="mob-fold-dir" class="mob-pill-dir">Front ▲</button>
             <button id="mob-unfold" class="mob-pill-unfold" data-i18n="mobUnfold" aria-label="Unfold last fold" disabled>📖 Unfold</button>
             <button id="mob-undo" class="mob-icon-btn" aria-label="Undo">↩</button>
             <button id="mob-open-tools" class="mob-pill-primary" data-i18n="mobTools">⚙️ Tools</button>
@@ -430,7 +441,7 @@
         <div class="sc-row"><span class="sc-keys"><kbd>Right-Drag</kbd></span><span data-i18n="scOrbit">Orbit 3D camera anytime (even over paper)</span></div>
         <div class="sc-row"><span class="sc-keys"><kbd>Dbl-Click</kbd></span><span data-i18n="scDblClick">Reset &amp; auto-frame camera</span></div>
         <div class="sc-row"><span class="sc-keys"><kbd>R</kbd></span><span data-i18n="scCamReset">Reset camera view</span></div>
-        <div class="sc-row"><span class="sc-keys"><kbd>1</kbd>–<kbd>4</kbd></span><span data-i18n="scCamPresets">3D / Front / Side / Top view</span></div>
+        <div class="sc-row"><span class="sc-keys"><kbd>1</kbd>–<kbd>5</kbd></span><span data-i18n="scCamPresets">3D / Front / Side / Top / Back view</span></div>
         <div class="sc-row"><span class="sc-keys"><kbd>V</kbd> / <kbd>M</kbd></span><span data-i18n="scValleyMtn">Switch Valley / Mountain fold</span></div>
         <div class="sc-row"><span class="sc-keys"><kbd>Shift</kbd> + Drag</span><span data-i18n="scShiftDrag">Flip Valley ↔ Mountain while dragging</span></div>
         <div class="sc-row"><span class="sc-keys"><kbd>Alt</kbd> + Drag</span><span data-i18n="scAltDrag">Hold to disable magnetic snap</span></div>
