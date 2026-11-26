@@ -1,18 +1,18 @@
 # 종이공방 3D (Origami 3D Studio)
 
-알려진 종이접기 기술을 3D로 구현하고, 직접 만들거나 선택한 작품의 접기 과정 전체를 애니메이션 GIF로 내보내는 3D 종이접기 프로그램입니다.
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fknoxxr%2Forigami-3d-studio)
+
+알려진 종이접기 기술 **전 분야 20종**을 3D 강체 기구학으로 구현하고, 직접 만들거나 선택한 작품의 접기 과정 전체를 애니메이션 GIF로 내보내는 3D 종이접기 프로그램입니다.
+
+## Vercel 배포
+- 상단 **Deploy with Vercel** 버튼을 클릭하거나 [Vercel Import 페이지](https://vercel.com/new/import?s=https://github.com/knoxxr/origami-3d-studio)에서 `knoxxr/origami-3d-studio` 저장소를 선택하면 `vercel.json` 설정(`node build.js` -> `public/`)으로 자동 빌드·배포됩니다.
 
 ## 주요 기능
 
-### 1. 알려진 종이접기 기술 3D 구현 (8종)
-- **계곡 접기 (Valley Fold)** — 파란 파선 가이드, 앞쪽 접기
-- **산 접기 (Mountain Fold)** — 빨간 일점쇄선 가이드, 뒤쪽 접기
-- **방석 접기 (Blintz Fold)** — 4모서리 중심 모으기
-- **계단 접기 (Pleat Fold)** — 평행 계곡+산 아코디언 주름
-- **눌러 접기 (Squash Fold)** — 3D 강체 기구학(등거리 보존) 기반 주머니 벌려 누르기
-- **꽃잎 접기 (Petal Fold)** — 학 기본형(Bird Base) 3D 들어 올리기 및 양옆 동시 접기
-- **안쪽 뒤집어 접기 (Inside Reverse Fold)** — 능선 벌리기 후 끝부분 내부 반전 3D 기구학
-- **토끼귀 접기 (Rabbit Ear Fold)** — 내심 각이등분선 3D 핀치 및 귀 눕히기
+### 1. 알려진 종이접기 기술 3D 구현 (총 20종)
+- **기본 (5종)**: 계곡 접기, 산 접기, 접었다 펴기(기준선 격자), 방석 접기, 계단 접기
+- **입체 · 기본형 · 반전 (8종)**: 사각 주머니 접기, 삼각 주머니 접기, 눌러 접기, 꽃잎 접기, 안쪽 뒤집어 접기, 바깥쪽 뒤집어 접기, 토끼귀 접기, 크림프 접기
+- **고급 · 싱크 · 입체 성형 · 테셀레이션 (7종)**: 회전 접기(Swivel), 열린 싱크 접기, 닫힌 싱크 접기, 끼워 잠그기(Pocket Tuck), 입체 부풀리기(3D Inflate), 미우라 접기(Miura-ori), 스퀘어 트위스트(Square Twist)
 
 ### 2. 완성 작품 3D 단계별 시뮬레이션 (5종)
 - **종이학 (Traditional Paper Crane, 10단계)**
