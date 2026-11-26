@@ -18,10 +18,10 @@
 | :---: | :---: |
 | ![직접 접기 드래그](./screenshots/desktop-free-drag.png) | ![GIF 내보내기 모달](./screenshots/desktop-gif-modal.png) |
 
-### 모바일 (터치 UI & 직관적 끌어접기)
-| 모바일 3D 뷰어 | 슬라이드업 바텀 시트 | 모서리 끌어접기 (미리보기) | 접기 완료 (STEP 1) |
+### 모바일 (터치 UI & 직관적 끌어접기 · 펼치기)
+| 모바일 3D 뷰어 | 슬라이드업 바텀 시트 | 모서리 끌어접기 | 접힌 겹 끌어 펼치기 |
 | :---: | :---: | :---: | :---: |
-| ![모바일 종이학](./screenshots/mobile-library-crane.png) | ![모바일 바텀 시트](./screenshots/mobile-bottom-sheet.png) | ![모바일 끌어접기](./screenshots/mobile-free-drag.png) | ![모바일 접기 완료](./screenshots/mobile-free-folded.png) |
+| ![모바일 종이학](./screenshots/mobile-library-crane.png) | ![모바일 바텀 시트](./screenshots/mobile-bottom-sheet.png) | ![모바일 끌어접기](./screenshots/mobile-free-drag.png) | ![모바일 끌어 펼치기](./screenshots/mobile-free-unfold.png) |
 
 ## 주요 기능
 

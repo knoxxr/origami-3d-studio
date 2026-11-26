@@ -397,14 +397,16 @@ function drawFreeStudioOverlay(ctx, width, height, cam, overlay, isDark) {
   const {
     interactMode = 'drag',
     snapPoints, hoveredSnap, p1, p2, hoverWorld, foldType, hoverSide, previewFaces,
-    dragStart, dragCurrent, dragSnapLabel, dragCrease,
+    dragStart, dragCurrent, dragSnapLabel, dragCrease, dragIsUnfold = false, unfoldGhost = null,
   } = overlay;
   ctx.save();
 
   const isMountain = foldType === 'mountain';
-  const accent = isMountain ? '#dc2626' : '#2563eb';
+  const foldAccent = isMountain ? '#dc2626' : '#2563eb';
+  const unfoldAccent = '#0d9488';
+  const accent = dragIsUnfold ? unfoldAccent : foldAccent;
 
-  // ---- Mode A: Direct Drag-to-Fold visual cues ----
+  // ---- Mode A: Direct Drag-to-Fold / Unfold visual cues ----
   if (interactMode === 'drag') {
     // 1. When idle (not dragging), show subtle, touch-friendly glowing grab rings on corners & midpoints
     if (!dragStart && snapPoints) {
@@ -422,30 +424,57 @@ function drawFreeStudioOverlay(ctx, width, height, cam, overlay, isDark) {
         }
         ctx.beginPath();
         ctx.arc(pr.x, pr.y, rad, 0, Math.PI * 2);
-        ctx.fillStyle = isHov ? accent : 'rgba(255, 255, 255, 0.94)';
+        ctx.fillStyle = isHov ? foldAccent : 'rgba(255, 255, 255, 0.94)';
         ctx.fill();
         ctx.lineWidth = isHov ? 2.4 : 1.8;
-        ctx.strokeStyle = isHov ? '#ffffff' : (sp.kind === 'vertex' ? accent : '#78716c');
+        ctx.strokeStyle = isHov ? '#ffffff' : (sp.kind === 'vertex' ? foldAccent : '#78716c');
         ctx.stroke();
       }
     }
 
-    // 2. While actively dragging a corner/edge to fold!
+    // 2. While actively dragging a corner/edge to fold or unfold!
     if (dragStart && dragCurrent) {
       // Show snap targets so the user sees where they can snap to!
-      if (snapPoints) {
+      if (!dragIsUnfold && snapPoints) {
         for (const sp of snapPoints) {
           if (Math.hypot(sp.x - dragStart.x, sp.y - dragStart.y) < 0.08) continue;
           const pr = projectPoint(worldToCamera(sp, cam), width, height);
           const isTarget = Math.hypot(sp.x - dragCurrent.x, sp.y - dragCurrent.y) < 0.03;
           ctx.beginPath();
           ctx.arc(pr.x, pr.y, isTarget ? 9 : sp.kind === 'center' ? 5.5 : 4.5, 0, Math.PI * 2);
-          ctx.fillStyle = isTarget ? accent : 'rgba(255,255,255,0.86)';
+          ctx.fillStyle = isTarget ? foldAccent : 'rgba(255,255,255,0.86)';
           ctx.fill();
           ctx.lineWidth = isTarget ? 2.6 : 1.5;
-          ctx.strokeStyle = isTarget ? '#ffffff' : (sp.kind === 'center' ? '#cf4436' : accent);
+          ctx.strokeStyle = isTarget ? '#ffffff' : (sp.kind === 'center' ? '#cf4436' : foldAccent);
           ctx.stroke();
         }
+      }
+
+      // Dashed teal ghost target ring showing where this folded corner came from (pull here to unfold!)
+      if (unfoldGhost) {
+        const ug = projectPoint(worldToCamera(unfoldGhost, cam), width, height);
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(ug.x, ug.y, dragIsUnfold ? 13 : 10.5, 0, Math.PI * 2);
+        ctx.fillStyle = dragIsUnfold ? 'rgba(13, 148, 136, 0.22)' : 'rgba(13, 148, 136, 0.10)';
+        ctx.fill();
+        ctx.setLineDash(dragIsUnfold ? [] : [4, 3]);
+        ctx.lineWidth = dragIsUnfold ? 2.5 : 1.8;
+        ctx.strokeStyle = unfoldAccent;
+        ctx.stroke();
+        ctx.setLineDash([]);
+        if (!dragIsUnfold) {
+          ctx.font = '600 10.5px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+          const lbl = '펼치기';
+          const tw = ctx.measureText(lbl).width;
+          ctx.fillStyle = 'rgba(13, 148, 136, 0.90)';
+          roundRect(ctx, ug.x - tw * 0.5 - 6, ug.y + 14, tw + 12, 18, 9);
+          ctx.fill();
+          ctx.fillStyle = '#ffffff';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(lbl, ug.x - tw * 0.5, ug.y + 23);
+        }
+        ctx.restore();
       }
 
       // Dashed fold crease line along perpendicular bisector
@@ -470,7 +499,7 @@ function drawFreeStudioOverlay(ctx, width, height, cam, overlay, isDark) {
         ctx.setLineDash([]);
       }
 
-      // Curved directional fold arrow from dragStart -> dragCurrent
+      // Curved directional arrow from dragStart -> dragCurrent
       const sA = projectPoint(worldToCamera(dragStart, cam), width, height);
       const sB = projectPoint(worldToCamera(dragCurrent, cam), width, height);
       const mx = (sA.x + sB.x) * 0.5;
@@ -480,7 +509,6 @@ function drawFreeStudioOverlay(ctx, width, height, cam, overlay, isDark) {
       const dLen = Math.hypot(dx, dy);
 
       if (dLen > 14) {
-        // Gentle arc bowing upward/outward like an origami diagram arrow
         const cx = mx - dy * 0.16;
         const cy = my + dx * 0.16 - 12;
 
@@ -513,7 +541,7 @@ function drawFreeStudioOverlay(ctx, width, height, cam, overlay, isDark) {
       // Start point dot
       ctx.beginPath();
       ctx.arc(sA.x, sA.y, 6, 0, Math.PI * 2);
-      ctx.fillStyle = '#cf4436';
+      ctx.fillStyle = dragIsUnfold ? unfoldAccent : '#cf4436';
       ctx.fill();
       ctx.strokeStyle = '#ffffff';
       ctx.lineWidth = 2;
@@ -525,7 +553,7 @@ function drawFreeStudioOverlay(ctx, width, height, cam, overlay, isDark) {
         const tw = ctx.measureText(dragSnapLabel).width;
         const bx = Math.min(width - tw - 22, Math.max(10, sB.x - tw * 0.5 - 8));
         const by = Math.max(12, sB.y - 34);
-        ctx.fillStyle = 'rgba(24, 22, 20, 0.88)';
+        ctx.fillStyle = dragIsUnfold ? 'rgba(13, 148, 136, 0.94)' : 'rgba(24, 22, 20, 0.88)';
         roundRect(ctx, bx, by, tw + 16, 22, 11);
         ctx.fill();
         ctx.fillStyle = '#ffffff';

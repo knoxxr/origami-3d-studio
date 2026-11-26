@@ -172,5 +172,53 @@ assert(gifBytes[0] === 0x47 && gifBytes[1] === 0x49 && gifBytes[2] === 0x46, 'GI
 assert(gifBytes[gifBytes.length - 1] === 0x3b, 'GIF trailer 0x3B');
 console.log(`  [OK] Encoded ${numFrames}-frame ${W}x${H} GIF (${gifBytes.length} bytes) in ${dt}ms`);
 
+console.log('\n=== 5. Verifying Unfold Engine (unfoldLast, unfoldAll, flip+unfold, topUnfoldHint) ===');
+{
+  const unfoldSteps = [
+    { type: 'valley', p1: [-1, -1], p2: [1, 1], side: -1, angleDeg: 180, label: '대각선 접기' },
+    { type: 'valley', p1: [0, -1], p2: [0, 1], side: -1, angleDeg: 180, label: '세로 반 접기' },
+  ];
+  const tlFolded = compilePlanarTimeline({ width: 2, height: 2 }, unfoldSteps);
+  assert(tlFolded.activeFoldCount === 2, 'activeFoldCount === 2 after two folds');
+  assert(tlFolded.topUnfoldHint && tlFolded.topUnfoldHint.pairs.length > 0, 'topUnfoldHint has moving flap pairs');
+  const prevCreases = tlFolded.finalState.creases.length;
+  assert(prevCreases >= 2, 'creases recorded before unfold');
+
+  // Unfold last step (keeps creases, decrements activeFoldCount to 1)
+  const tlUnfold1 = compilePlanarTimeline({ width: 2, height: 2 }, [...unfoldSteps, { type: 'unfoldLast', label: '직전 펼치기' }]);
+  assert(tlUnfold1.activeFoldCount === 1, 'activeFoldCount === 1 after unfoldLast');
+  assert(tlUnfold1.finalState.creases.length === prevCreases, 'unfoldLast preserves all creases');
+  const uMid = tlUnfold1.evaluate(2, 0.5);
+  assert(uMid.faces.length > 0 && uMid.faces.every(f => f.pts.every(p => Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z))), 'unfoldLast mid-frame finite');
+
+  // Unfold all remaining folds back to flat square (z=0 everywhere, bounds [-1, 1])
+  const tlUnfoldAll = compilePlanarTimeline({ width: 2, height: 2 }, [...unfoldSteps, { type: 'unfoldAll', label: '전체 펼치기' }]);
+  assert(tlUnfoldAll.activeFoldCount === 0, 'activeFoldCount === 0 after unfoldAll');
+  assert(tlUnfoldAll.topUnfoldHint === null, 'topUnfoldHint is null when flat');
+  assert(tlUnfoldAll.finalState.creases.length === prevCreases, 'unfoldAll preserves all creases');
+  let maxZ = 0, minX = 9, maxX = -9, minY = 9, maxY = -9;
+  for (const f of tlUnfoldAll.finalState.faces) {
+    for (const p of f.pts) {
+      maxZ = Math.max(maxZ, Math.abs(p.z));
+      minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+      minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+    }
+  }
+  assert(maxZ < 1e-3, `unfoldAll returns flat sheet (maxZ=${maxZ})`);
+  assert(Math.abs(minX + 1) < 1e-3 && Math.abs(maxX - 1) < 1e-3 && Math.abs(minY + 1) < 1e-3 && Math.abs(maxY - 1) < 1e-3, 'unfoldAll restores full [-1,1]x[-1,1] square');
+
+  // Fold -> Flip -> UnfoldLast stays continuous and unfolds in flipped coordinates
+  const tlFlipUnfold = compilePlanarTimeline({ width: 2, height: 2 }, [
+    { type: 'valley', p1: [-1, -1], p2: [1, 1], side: -1, angleDeg: 180, label: '대각선 접기' },
+    { type: 'flip', axis: 'y', label: '뒤집기' },
+    { type: 'unfoldLast', label: '뒤집은 뒤 펼치기' },
+  ]);
+  assert(tlFlipUnfold.activeFoldCount === 0, 'fold -> flip -> unfoldLast resets activeFoldCount to 0');
+  const fAfterFlip = tlFlipUnfold.evaluate(1, 1.0);
+  const fStartUnfold = tlFlipUnfold.evaluate(2, 0.0);
+  assert(fAfterFlip.faces.length === fStartUnfold.faces.length, 'fold -> flip -> unfoldLast face count continuity');
+  console.log('  [OK] unfoldLast, unfoldAll, flip+unfold conjugation, and topUnfoldHint verified');
+}
+
 console.log(`\nSUMMARY: ${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

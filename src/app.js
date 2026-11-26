@@ -55,7 +55,7 @@ export function initOrigamiStudio() {
     hoveredSnap: null,
     hoverSide: 0,
 
-    // Interactive Direct Drag-to-Fold live state
+    // Interactive Direct Drag-to-Fold / Unfold live state
     dragFoldActive: false,
     dragStart: null,
     dragCurrent: null,
@@ -64,6 +64,8 @@ export function initOrigamiStudio() {
     dragLiveStep: null,
     dragLiveCompiled: null,
     dragLiveT: 0,
+    dragIsUnfold: false,
+    dragUnfoldGhost: null,
 
     // Compiled timeline cache
     compiledPlanar: null,
@@ -232,6 +234,8 @@ export function initOrigamiStudio() {
     state.dragLiveStep = null;
     state.dragLiveCompiled = null;
     state.dragLiveT = 0;
+    state.dragIsUnfold = false;
+    state.dragUnfoldGhost = null;
   }
 
   // ---- Free Fold Actions ----
@@ -244,6 +248,29 @@ export function initOrigamiStudio() {
     state.playing = true;
     state.stepHoldTimer = 0;
     syncUI();
+  }
+
+  function unfoldLastFreeStep() {
+    if (state.mode !== 'free' || !state.compiledPlanar || state.compiledPlanar.activeFoldCount === 0) return;
+    if (isMobileViewport()) closeSheet();
+    const hintName = state.compiledPlanar.topUnfoldHint?.label;
+    addFreeStep({
+      type: 'unfoldLast',
+      label: hintName ? `펼치기 (${hintName})` : '직전 접기 펼치기',
+      technique: '펼치기',
+      desc: '가장 최근에 접은 겹을 접기 자국을 유지한 채 부드럽게 펼칩니다.',
+    });
+  }
+
+  function unfoldAllFreeSteps() {
+    if (state.mode !== 'free' || !state.compiledPlanar || state.compiledPlanar.activeFoldCount === 0) return;
+    if (isMobileViewport()) closeSheet();
+    addFreeStep({
+      type: 'unfoldAll',
+      label: '전체 펼치기',
+      technique: '펼치기',
+      desc: '접힌 모든 겹을 순서대로 펼쳐 접기 자국(2D 전개도)이 남은 평평한 종이로 되돌립니다.',
+    });
   }
 
   function undoFreeStep() {
@@ -367,12 +394,67 @@ export function initOrigamiStudio() {
     return false;
   }
 
+  function findUnfoldPairForPoint(pt) {
+    const hint = state.compiledPlanar?.topUnfoldHint;
+    if (!hint || !hint.pairs || !pt) return null;
+    let best = null;
+    let bestD = 0.36;
+    for (const pair of hint.pairs) {
+      const d = Math.hypot(pair.folded.x - pt.x, pair.folded.y - pt.y);
+      if (d < bestD) {
+        bestD = d;
+        best = pair;
+      }
+    }
+    return best;
+  }
+
   function updateDirectDragFold(sx, sy, w, h) {
     if (!state.dragStart || !lastCam || !state.compiledPlanar) return;
     const snapRadius = isMobileViewport() ? 36 : 26;
-    const snapTarget = findNearestSnap(sx, sy, w, h, snapRadius, state.dragStart);
     const raw = screenToPlane(sx, sy, w, h, lastCam, v3(0, 0, 0), v3(0, 0, 1));
-    const cur = snapTarget ? v3(snapTarget.x, snapTarget.y, 0) : (raw ? v3(raw.x, raw.y, 0) : state.dragStart);
+    const rawPt = raw ? v3(raw.x, raw.y, 0) : state.dragStart;
+
+    // 1. Check Direct Drag-to-Unfold: pulling a folded corner/edge back past its hinge toward its original unfolded position!
+    const unfoldPair = findUnfoldPairForPoint(state.dragStart);
+    state.dragUnfoldGhost = unfoldPair ? unfoldPair.unfolded : null;
+
+    if (unfoldPair && state.compiledPlanar.topUnfoldHint) {
+      const ux = unfoldPair.unfolded.x - unfoldPair.folded.x;
+      const uy = unfoldPair.unfolded.y - unfoldPair.folded.y;
+      const uLen = Math.hypot(ux, uy);
+      if (uLen > 0.16) {
+        const dxU = rawPt.x - state.dragStart.x;
+        const dyU = rawPt.y - state.dragStart.y;
+        const proj = (dxU * ux + dyU * uy) / uLen;
+        const perp = Math.abs(dxU * (-uy) + dyU * ux) / uLen;
+
+        // Crossing past the hinge line (proj > 0.52 * uLen) into the unfolded side triggers live 3D Unfold!
+        if (proj > uLen * 0.52 && perp < Math.max(0.48, proj * 0.65)) {
+          const distToOrigin = Math.hypot(rawPt.x - unfoldPair.unfolded.x, rawPt.y - unfoldPair.unfolded.y);
+          const snapped = distToOrigin < 0.42 || proj >= uLen * 0.88;
+          const hintName = state.compiledPlanar.topUnfoldHint.label;
+          state.dragIsUnfold = true;
+          state.dragCurrent = snapped ? v3(unfoldPair.unfolded.x, unfoldPair.unfolded.y, 0) : rawPt;
+          state.dragSnapLabel = snapped ? '펼치기 · 원래 위치' : '바깥으로 끌어 펼치기';
+          state.dragCrease = null;
+          state.dragLiveStep = {
+            type: 'unfoldLast',
+            label: hintName ? `펼치기 (${hintName})` : '접기 펼치기',
+            technique: '펼치기',
+            desc: '접힌 겹을 원래 위치로 부드럽게 펼칩니다.',
+          };
+          state.dragLiveCompiled = { evaluate: state.compiledPlanar.topUnfoldHint.evaluateUnfold };
+          state.dragLiveT = snapped ? 0.94 : Math.max(0.22, Math.min(0.92, proj / uLen));
+          return;
+        }
+      }
+    }
+
+    // 2. Standard Direct Drag-to-Fold (Huzita-Hatori Axiom 2)
+    state.dragIsUnfold = false;
+    const snapTarget = findNearestSnap(sx, sy, w, h, snapRadius, state.dragStart);
+    const cur = snapTarget ? v3(snapTarget.x, snapTarget.y, 0) : rawPt;
 
     state.dragCurrent = cur;
     state.dragSnapLabel = snapTarget
@@ -479,7 +561,7 @@ export function initOrigamiStudio() {
     dragStartX = dragLastX = x;
     dragStartY = dragLastY = y;
 
-    // Decide 1-finger gesture: Direct Drag-to-Fold vs Orbit!
+    // Decide 1-finger gesture: Direct Drag-to-Fold/Unfold vs Orbit!
     const inDirectDrag = state.mode === 'free' && state.freeInteractMode === 'drag' && lastCam;
     if (inDirectDrag) {
       // Jump to latest folded state if user paused earlier
@@ -495,6 +577,7 @@ export function initOrigamiStudio() {
 
       if (onPaper) {
         const startPt = snap ? v3(snap.x, snap.y, 0) : v3(raw.x, raw.y, 0);
+        const unfoldPair = findUnfoldPairForPoint(startPt);
         gestureMode = 'drag-fold';
         state.dragFoldActive = true;
         state.dragStart = startPt;
@@ -503,6 +586,8 @@ export function initOrigamiStudio() {
         state.dragCrease = null;
         state.dragLiveStep = null;
         state.dragLiveCompiled = null;
+        state.dragIsUnfold = false;
+        state.dragUnfoldGhost = unfoldPair ? unfoldPair.unfolded : null;
         updateFreeBanner();
         return;
       }
@@ -790,11 +875,20 @@ export function initOrigamiStudio() {
     }
     banner.style.display = 'flex';
     const textEl = $('free-guide-text');
+    const canUnfold = (state.compiledPlanar?.activeFoldCount || 0) > 0;
     if (state.freeInteractMode === 'drag') {
       if (state.dragFoldActive) {
-        textEl.textContent = state.dragSnapLabel
-          ? `손을 떼면 접기 완료! (${state.dragSnapLabel})`
-          : '원하는 지점까지 끌어당긴 뒤 손을 떼세요';
+        if (state.dragIsUnfold) {
+          textEl.textContent = '손을 떼면 접힌 겹이 펼쳐집니다! (자국 유지)';
+        } else {
+          textEl.textContent = state.dragSnapLabel
+            ? `손을 떼면 접기 완료! (${state.dragSnapLabel})`
+            : '원하는 지점까지 끌어당긴 뒤 손을 떼세요';
+        }
+      } else if (canUnfold) {
+        textEl.textContent = isMobileViewport()
+          ? '모서리 끌어 접기 · 바깥으로 끌어 펼치기'
+          : '모서리를 끌어 접기 · 접힌 모서리를 바깥으로 끌어 펼치기';
       } else {
         textEl.textContent = '모서리를 끌어 다른 점에 맞춰 접기 · 바깥 드래그로 3D 회전';
       }
@@ -846,6 +940,8 @@ export function initOrigamiStudio() {
     const dirBtn = $('mob-fold-dir');
     dirBtn.textContent = isMountain ? '산 ▼' : '계곡 ▲';
     dirBtn.classList.toggle('mountain', isMountain);
+    const canUnfold = (state.compiledPlanar?.activeFoldCount || 0) > 0;
+    $('mob-unfold').disabled = !canUnfold;
     $('mob-undo').disabled = state.freeSteps.length === 0;
   }
 
@@ -877,7 +973,10 @@ export function initOrigamiStudio() {
     }
 
     if (state.mode === 'free') {
+      const canUnfold = (state.compiledPlanar?.activeFoldCount || 0) > 0;
       $('free-title-input').value = state.freeTitle;
+      $('btn-unfold-last').disabled = !canUnfold;
+      $('btn-unfold-all').disabled = !canUnfold;
       $('btn-undo').disabled = state.freeSteps.length === 0;
       $('btn-redo').disabled = state.freeRedo.length === 0;
       $('pleat-offset-row').style.display = state.freeTool === 'pleat' ? 'flex' : 'none';
@@ -914,7 +1013,7 @@ export function initOrigamiStudio() {
   function renderAll() {
     const { w, h } = resizeCanvas();
 
-    // If user is actively Drag-to-Folding, render the LIVE 3D folding mesh directly!
+    // If user is actively Drag-to-Folding or Drag-to-Unfolding, render the LIVE 3D mesh directly!
     let frame;
     if (state.dragFoldActive && state.dragLiveCompiled) {
       frame = state.dragLiveCompiled.evaluate(state.dragLiveT);
@@ -941,6 +1040,8 @@ export function initOrigamiStudio() {
           dragCurrent: state.dragCurrent,
           dragSnapLabel: state.dragSnapLabel,
           dragCrease: state.dragCrease,
+          dragIsUnfold: state.dragIsUnfold,
+          unfoldGhost: state.dragUnfoldGhost,
         }
       : null;
 
@@ -1167,7 +1268,7 @@ export function initOrigamiStudio() {
   $('mob-prev').addEventListener('click', () => jumpToStep(Math.max(0, Math.ceil(state.playPos) - 1)));
   $('mob-next').addEventListener('click', () => jumpToStep(Math.min(getActiveModel().steps.length, Math.floor(state.playPos) + 1)));
   $('mob-undo').addEventListener('click', undoFreeStep);
-  $('mob-flip').addEventListener('click', () => applyQuickMacro('flip'));
+  $('mob-unfold').addEventListener('click', unfoldLastFreeStep);
   $('mob-interact-toggle').addEventListener('click', () => {
     const order = ['drag', 'line', 'orbit'];
     state.freeInteractMode = order[(order.indexOf(state.freeInteractMode) + 1) % order.length];
@@ -1218,6 +1319,8 @@ export function initOrigamiStudio() {
       syncUI();
     });
   });
+  $('btn-unfold-last').addEventListener('click', unfoldLastFreeStep);
+  $('btn-unfold-all').addEventListener('click', unfoldAllFreeSteps);
   $('free-angle-slider').addEventListener('input', (e) => { state.freeAngle = Number(e.target.value); $('free-angle-val').textContent = `${state.freeAngle}°`; });
   document.querySelectorAll('[data-angle]').forEach(btn => {
     btn.addEventListener('click', () => {

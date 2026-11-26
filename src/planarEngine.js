@@ -537,6 +537,174 @@ export function compilePlanarStep(baseState, step) {
 }
 
 /**
+ * Apply a list of rigid whole-paper transforms (flip / rotate) that occurred
+ * after a fold step so unfolding always animates in the paper's current frame.
+ */
+function applyRigidOpsToPoint(p, ops) {
+  let out = { x: p.x, y: p.y, z: p.z || 0 };
+  const origin = v3(0, 0, 0);
+  for (const op of ops) {
+    if (op.type === 'flip') {
+      const axis = op.axis === 'x' ? v3(1, 0, 0) : v3(0, 1, 0);
+      out = rotateAroundAxis(out, origin, axis, Math.PI);
+    } else if (op.type === 'rotate') {
+      const rad = ((op.angleDeg ?? 90) * Math.PI) / 180;
+      out = rotateAroundAxis(out, origin, v3(0, 0, 1), rad);
+    }
+  }
+  return out;
+}
+
+function applyRigidOpsToFrame(frame, ops) {
+  if (!ops || ops.length === 0) return frame;
+  let flipSign = 1;
+  for (const op of ops) {
+    if (op.type === 'flip') flipSign *= -1;
+  }
+  return {
+    faces: frame.faces.map(f => ({
+      pts: f.pts.map(p => applyRigidOpsToPoint(p, ops)),
+      uvs: f.uvs,
+      layer: f.layer * flipSign,
+    })),
+    creases: frame.creases,
+    guides: (frame.guides || []).map(g => ({
+      ...g,
+      p1: applyRigidOpsToPoint(g.p1, ops),
+      p2: applyRigidOpsToPoint(g.p2, ops),
+    })),
+  };
+}
+
+function buildEndStateFromFaces(faces, baseState) {
+  const endState = {
+    faces: faces.map(f => ({
+      pts: f.pts.map(p => ({
+        x: p.x,
+        y: p.y,
+        z: Math.abs(p.z) < 1e-4 ? 0 : p.z,
+      })),
+      uvs: f.uvs.map(u => ({ ...u })),
+      layer: f.layer,
+    })),
+    creases: baseState.creases.map(c => ({ ...c })),
+    width: baseState.width,
+    height: baseState.height,
+    rotationDeg: baseState.rotationDeg,
+  };
+  compactLayers(endState.faces);
+  return endState;
+}
+
+function compileUnfoldEntry(curState, entry) {
+  const evaluate = (t) => {
+    const u = Math.max(0, Math.min(1, 1 - t));
+    const raw = applyRigidOpsToFrame(entry.compiled.evaluate(u), entry.postRigids);
+    return {
+      faces: raw.faces,
+      creases: curState.creases,
+      guides: raw.guides,
+    };
+  };
+  const endEval = evaluate(1.0);
+  const endState = buildEndStateFromFaces(endEval.faces, curState);
+  return { evaluate, endState };
+}
+
+function compileUnfoldAllEntries(curState, stackEntries) {
+  if (!stackEntries.length) {
+    const endState = clonePaperState(curState);
+    return {
+      evaluate: () => ({ faces: curState.faces, creases: curState.creases, guides: [] }),
+      endState,
+    };
+  }
+  const ordered = stackEntries.slice().reverse();
+  const k = ordered.length;
+  const evaluate = (t) => {
+    const clamped = Math.max(0, Math.min(1, t));
+    if (clamped >= 1) {
+      const last = ordered[k - 1];
+      const raw = applyRigidOpsToFrame(last.compiled.evaluate(0), last.postRigids);
+      return { faces: raw.faces, creases: curState.creases, guides: [] };
+    }
+    const scaled = clamped * k;
+    const idx = Math.min(k - 1, Math.floor(scaled));
+    const localT = scaled - idx;
+    const entry = ordered[idx];
+    const raw = applyRigidOpsToFrame(entry.compiled.evaluate(1 - localT), entry.postRigids);
+    return {
+      faces: raw.faces,
+      creases: curState.creases,
+      guides: raw.guides,
+    };
+  };
+  const endEval = evaluate(1.0);
+  const endState = buildEndStateFromFaces(endEval.faces, curState);
+  return { evaluate, endState };
+}
+
+/**
+ * Extract folded -> unfolded handle pairs for the top active fold so users can
+ * pull a folded corner/edge back outward to unfold it intuitively in 3D.
+ */
+function computeUnfoldHint(curState, entry) {
+  const f0 = applyRigidOpsToFrame(entry.compiled.evaluate(0), entry.postRigids).faces;
+  const f1 = applyRigidOpsToFrame(entry.compiled.evaluate(1), entry.postRigids).faces;
+  const candidates = [];
+  let maxDist = 0;
+
+  const count = Math.min(f0.length, f1.length);
+  for (let i = 0; i < count; i++) {
+    const pts0 = f0[i].pts;
+    const pts1 = f1[i].pts;
+    const n = Math.min(pts0.length, pts1.length);
+    for (let j = 0; j < n; j++) {
+      const a0 = pts0[j];
+      const a1 = pts1[j];
+      const d = Math.hypot(a1.x - a0.x, a1.y - a0.y, (a1.z || 0) - (a0.z || 0));
+      if (d > 0.16) {
+        if (d > maxDist) maxDist = d;
+        candidates.push({
+          folded: v3(a1.x, a1.y, a1.z || 0),
+          unfolded: v3(a0.x, a0.y, a0.z || 0),
+          dist: d,
+        });
+      }
+      // Also include edge midpoints so dragging the middle of a folded edge works too
+      const b0 = pts0[(j + 1) % n];
+      const b1 = pts1[(j + 1) % n];
+      const m0 = v3((a0.x + b0.x) * 0.5, (a0.y + b0.y) * 0.5, ((a0.z || 0) + (b0.z || 0)) * 0.5);
+      const m1 = v3((a1.x + b1.x) * 0.5, (a1.y + b1.y) * 0.5, ((a1.z || 0) + (b1.z || 0)) * 0.5);
+      const dm = Math.hypot(m1.x - m0.x, m1.y - m0.y, m1.z - m0.z);
+      if (dm > 0.16) {
+        if (dm > maxDist) maxDist = dm;
+        candidates.push({ folded: m1, unfolded: m0, dist: dm });
+      }
+    }
+  }
+
+  const pairs = [];
+  const threshold = Math.max(0.18, maxDist * 0.62);
+  candidates.sort((a, b) => b.dist - a.dist);
+  for (const c of candidates) {
+    if (c.dist < threshold) continue;
+    const dup = pairs.some(p =>
+      Math.hypot(p.folded.x - c.folded.x, p.folded.y - c.folded.y) < 0.08
+      && Math.hypot(p.unfolded.x - c.unfolded.x, p.unfolded.y - c.unfolded.y) < 0.08
+    );
+    if (!dup) pairs.push(c);
+  }
+
+  const unfoldCompiled = compileUnfoldEntry(curState, entry);
+  return {
+    label: entry.step.label || entry.step.technique || '접기',
+    pairs,
+    evaluateUnfold: unfoldCompiled.evaluate,
+  };
+}
+
+/**
  * Compile an entire sequence of planar steps into a timeline evaluator.
  */
 export function compilePlanarTimeline(initialConfig, steps) {
@@ -546,19 +714,51 @@ export function compilePlanarTimeline(initialConfig, steps) {
     initialConfig?.rotationDeg ?? 0
   );
   const compiledSteps = [];
+  const activeFoldStack = [];
   let cur = initState;
 
   for (const step of steps) {
-    const compiled = compilePlanarStep(cur, step);
+    let compiled;
+    if (step.type === 'unfoldLast') {
+      if (activeFoldStack.length > 0) {
+        const target = activeFoldStack.pop();
+        compiled = compileUnfoldEntry(cur, target);
+      } else {
+        const endState = clonePaperState(cur);
+        compiled = {
+          evaluate: () => ({ faces: cur.faces, creases: cur.creases, guides: [] }),
+          endState,
+        };
+      }
+    } else if (step.type === 'unfoldAll') {
+      compiled = compileUnfoldAllEntries(cur, activeFoldStack);
+      activeFoldStack.length = 0;
+    } else {
+      compiled = compilePlanarStep(cur, step);
+      if (step.type === 'flip' || step.type === 'rotate') {
+        const op = { type: step.type, axis: step.axis, angleDeg: step.angleDeg };
+        for (const entry of activeFoldStack) {
+          entry.postRigids.push(op);
+        }
+      } else if (step.type !== 'precrease') {
+        activeFoldStack.push({ step, compiled, postRigids: [] });
+      }
+    }
     compiledSteps.push({ step, ...compiled });
     cur = compiled.endState;
   }
+
+  const topUnfoldHint = activeFoldStack.length > 0
+    ? computeUnfoldHint(cur, activeFoldStack[activeFoldStack.length - 1])
+    : null;
 
   return {
     initState,
     compiledSteps,
     finalState: cur,
     stepCount: compiledSteps.length,
+    activeFoldCount: activeFoldStack.length,
+    topUnfoldHint,
     evaluate(stepIdx, t) {
       if (compiledSteps.length === 0) {
         return { faces: initState.faces, creases: initState.creases, guides: [] };
