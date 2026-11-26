@@ -7,6 +7,22 @@
 ## Vercel 배포
 - 상단 **Deploy with Vercel** 버튼을 클릭하거나 [Vercel Import 페이지](https://vercel.com/new/import?s=https://github.com/knoxxr/origami-3d-studio)에서 `knoxxr/origami-3d-studio` 저장소를 선택하면 `vercel.json` 설정(`node build.js` -> `public/`)으로 자동 빌드·배포됩니다.
 
+## 스크린샷
+
+### 데스크톱
+| 3D 종이학 & 2D 전개도 | 미우라 접기 (테셀레이션) |
+| :---: | :---: |
+| ![데스크톱 종이학](./screenshots/desktop-library-crane.png) | ![미우라 접기](./screenshots/desktop-miura-ori.png) |
+
+| 직관적 드래그 종이접기 | 과정 전체 GIF 내보내기 |
+| :---: | :---: |
+| ![직접 접기 드래그](./screenshots/desktop-free-drag.png) | ![GIF 내보내기 모달](./screenshots/desktop-gif-modal.png) |
+
+### 모바일 (터치 UI & 직관적 끌어접기)
+| 모바일 3D 뷰어 | 슬라이드업 바텀 시트 | 모서리 끌어접기 (미리보기) | 접기 완료 (STEP 1) |
+| :---: | :---: | :---: | :---: |
+| ![모바일 종이학](./screenshots/mobile-library-crane.png) | ![모바일 바텀 시트](./screenshots/mobile-bottom-sheet.png) | ![모바일 끌어접기](./screenshots/mobile-free-drag.png) | ![모바일 접기 완료](./screenshots/mobile-free-folded.png) |
+
 ## 주요 기능
 
 ### 1. 알려진 종이접기 기술 3D 구현 (총 20종)
