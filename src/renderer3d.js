@@ -223,9 +223,18 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
   const frontRgb = hexToRgb(frontColor);
   const backRgb = hexToRgb(backColor);
 
-  // 2. Soft ground contact shadow projected onto studio floor plane y = -1.32
+  // 2. Soft ground contact shadow projected neatly below the paper's actual vertical span
   if (showShadow && faces.length > 0) {
-    const floorY = -1.36;
+    let minY = Infinity, maxY = -Infinity;
+    for (let i = 0; i < faces.length; i++) {
+      const pts = faces[i].pts;
+      for (let k = 0; k < pts.length; k++) {
+        if (pts[k].y < minY) minY = pts[k].y;
+        if (pts[k].y > maxY) maxY = pts[k].y;
+      }
+    }
+    const spanY = Math.max(0.4, maxY - minY);
+    const floorY = minY - Math.max(0.24, Math.min(0.42, spanY * 0.18));
     ctx.save();
     ctx.fillStyle = isDark ? 'rgba(0, 0, 0, 0.24)' : 'rgba(65, 48, 32, 0.085)';
     for (let i = 0; i < faces.length; i++) {
@@ -255,7 +264,7 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
   // 3. Transform & shade all paper faces
   const renderItems = [];
   const layerThick = 0.0042;
-  const viewSideZ = cam.eye.z >= 0 ? 1 : -1;
+  const viewSideZ = (cam.eye.z - cam.target.z) >= 0 ? 1 : -1;
 
   for (let i = 0; i < faces.length; i++) {
     const f = faces[i];

@@ -36,6 +36,7 @@ export function initOrigamiStudio() {
     // 3D Orbit Camera
     camera: { yaw: 0.58, pitch: 0.34, distance: 4.8, target: v3(0, 0, 0) },
     targetCamera: null,
+    userZoomScale: 1.0,
 
     // Free Fold Studio state
     freeTitle: '나의 3D 종이접기',
@@ -171,19 +172,55 @@ export function initOrigamiStudio() {
     return { ...frame, stepIdx, t };
   }
 
+  // ---- Adaptive 3D Paper Bounds & Auto-Framing ----
+  function computePaperBounds(faces) {
+    if (!faces || !faces.length) return { center: v3(0, 0, 0), radius: 1.414 };
+    let minX = Infinity, maxX = -Infinity;
+    let minY = Infinity, maxY = -Infinity;
+    let minZ = Infinity, maxZ = -Infinity;
+    for (let i = 0; i < faces.length; i++) {
+      const pts = faces[i].pts;
+      for (let k = 0; k < pts.length; k++) {
+        const p = pts[k];
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+        if (p.z < minZ) minZ = p.z;
+        if (p.z > maxZ) maxZ = p.z;
+      }
+    }
+    if (!Number.isFinite(minX)) return { center: v3(0, 0, 0), radius: 1.414 };
+    const center = v3((minX + maxX) * 0.5, (minY + maxY) * 0.5, (minZ + maxZ) * 0.5);
+    const radius = Math.max(0.24, 0.5 * Math.hypot(maxX - minX, maxY - minY, maxZ - minZ));
+    return { center, radius };
+  }
+
+  function idealDistanceForRadius(radius) {
+    const factor = isMobileViewport() ? 3.08 : 3.16;
+    return Math.max(1.25, Math.min(6.4, radius * factor));
+  }
+
+  function getCurrentPaperBounds() {
+    const frame = evaluateAtPos(state.playPos);
+    return computePaperBounds(frame.faces);
+  }
+
   // ---- Model & Mode Switching ----
   function selectLibraryModel(id, autoPlay = true) {
     state.mode = 'library';
     state.selectedId = id;
+    state.userZoomScale = 1.0;
     clearInteractiveDraft();
     rebuildCompiledTimeline();
-    const model = getActiveModel();
-    if (model.defaultCamera) {
-      state.targetCamera = { ...model.defaultCamera, target: v3(0, 0, 0) };
-    }
     state.playPos = 0;
     state.stepHoldTimer = 0;
     state.playing = autoPlay;
+    const model = getActiveModel();
+    const bounds = getCurrentPaperBounds();
+    if (model.defaultCamera) {
+      state.targetCamera = { ...model.defaultCamera, target: bounds.center };
+    }
     if (isMobileViewport()) closeSheet();
     syncUI();
   }
@@ -191,15 +228,23 @@ export function initOrigamiStudio() {
   function switchMode(newMode) {
     if (state.mode === newMode) return;
     state.mode = newMode;
+    state.userZoomScale = 1.0;
     clearInteractiveDraft();
     rebuildCompiledTimeline();
     if (newMode === 'free') {
       state.playing = false;
       state.playPos = state.freeSteps.length;
-      state.targetCamera = { yaw: 0.0, pitch: 0.14, distance: isMobileViewport() ? 4.3 : 4.5, target: v3(0, 0, 0) };
+      const bounds = getCurrentPaperBounds();
+      state.targetCamera = {
+        yaw: 0.0,
+        pitch: 0.14,
+        distance: idealDistanceForRadius(bounds.radius),
+        target: bounds.center,
+      };
     } else {
       const m = getActiveModel();
-      if (m.defaultCamera) state.targetCamera = { ...m.defaultCamera, target: v3(0, 0, 0) };
+      const bounds = getCurrentPaperBounds();
+      if (m.defaultCamera) state.targetCamera = { ...m.defaultCamera, target: bounds.center };
     }
     if (isMobileViewport()) closeSheet();
     syncUI();
@@ -213,11 +258,18 @@ export function initOrigamiStudio() {
     state.freeSteps = model.steps.map(s => JSON.parse(JSON.stringify(s)));
     state.freeRedo = [];
     state.mode = 'free';
+    state.userZoomScale = 1.0;
     clearInteractiveDraft();
     rebuildCompiledTimeline();
     state.playing = false;
     state.playPos = state.freeSteps.length;
-    state.targetCamera = { yaw: 0.12, pitch: 0.18, distance: 4.5, target: v3(0, 0, 0) };
+    const bounds = getCurrentPaperBounds();
+    state.targetCamera = {
+      yaw: 0.12,
+      pitch: 0.18,
+      distance: idealDistanceForRadius(bounds.radius),
+      target: bounds.center,
+    };
     if (isMobileViewport()) closeSheet();
     syncUI();
   }
@@ -292,6 +344,7 @@ export function initOrigamiStudio() {
     state.freeSteps = [];
     state.freeRedo = [];
     state.freePaper = { width: 2, height: 2, rotationDeg: 0 };
+    state.userZoomScale = 1.0;
     clearInteractiveDraft();
     rebuildCompiledTimeline();
     state.playing = false;
@@ -465,7 +518,9 @@ export function initOrigamiStudio() {
     const dy = cur.y - state.dragStart.y;
     const dLen = Math.hypot(dx, dy);
 
-    if (dLen < 0.14) {
+    const paperBounds = computePaperBounds(state.compiledPlanar.finalState.faces);
+    const minDrag = Math.max(0.035, Math.min(0.14, paperBounds.radius * 0.12));
+    if (dLen < minDrag) {
       state.dragCrease = null;
       state.dragLiveStep = null;
       state.dragLiveCompiled = null;
@@ -476,8 +531,9 @@ export function initOrigamiStudio() {
     // Huzita-Hatori Axiom 2: exact perpendicular bisector bringing dragStart onto cur!
     const mid = v3((state.dragStart.x + cur.x) * 0.5, (state.dragStart.y + cur.y) * 0.5, 0);
     const dir = norm(v3(-dy, dx, 0));
-    const p1 = v3(mid.x - dir.x * 1.45, mid.y - dir.y * 1.45, 0);
-    const p2 = v3(mid.x + dir.x * 1.45, mid.y + dir.y * 1.45, 0);
+    const halfCrease = Math.max(0.45, Math.min(1.45, paperBounds.radius * 1.15));
+    const p1 = v3(mid.x - dir.x * halfCrease, mid.y - dir.y * halfCrease, 0);
+    const p2 = v3(mid.x + dir.x * halfCrease, mid.y + dir.y * halfCrease, 0);
     const leftNormal = norm(cross(v3(0, 0, 1), dir));
     const side = dot(sub(state.dragStart, mid), leftNormal) >= 0 ? 1 : -1;
 
@@ -504,7 +560,8 @@ export function initOrigamiStudio() {
     state.dragLiveStep = liveStep;
     state.dragLiveCompiled = compilePlanarStep(state.compiledPlanar.finalState, liveStep);
     // Real-time 3D preview angle follows drag distance & snaps close to finished when locked on target!
-    state.dragLiveT = snapTarget ? 0.88 : Math.min(0.84, 0.25 + (dLen / 1.55) * 0.62);
+    const liveScale = Math.max(0.32, paperBounds.radius * 1.1);
+    state.dragLiveT = snapTarget ? 0.88 : Math.min(0.84, 0.25 + (dLen / liveScale) * 0.62);
   }
 
   function computeFreePreviewFaces() {
@@ -610,7 +667,11 @@ export function initOrigamiStudio() {
       const pts = Array.from(activePointers.values());
       const curDist = Math.max(10, Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y));
       const ratio = pinchStartDist / curDist;
-      state.camera.distance = Math.max(2.5, Math.min(8.4, pinchStartCamDist * ratio));
+      state.camera.distance = Math.max(1.05, Math.min(8.4, pinchStartCamDist * ratio));
+      if (state.mode === 'free') {
+        const ideal = idealDistanceForRadius(getCurrentPaperBounds().radius);
+        state.userZoomScale = Math.max(0.55, Math.min(2.2, state.camera.distance / ideal));
+      }
       const midX = (pts[0].x + pts[1].x) * 0.5;
       const midY = (pts[0].y + pts[1].y) * 0.5;
       state.camera.yaw -= (midX - pinchMidX) * 0.008;
@@ -739,7 +800,11 @@ export function initOrigamiStudio() {
   canvas.addEventListener('wheel', (e) => {
     e.preventDefault();
     state.targetCamera = null;
-    state.camera.distance = Math.max(2.5, Math.min(8.4, state.camera.distance * (1 + e.deltaY * 0.001)));
+    state.camera.distance = Math.max(1.05, Math.min(8.4, state.camera.distance * (1 + e.deltaY * 0.001)));
+    if (state.mode === 'free') {
+      const ideal = idealDistanceForRadius(getCurrentPaperBounds().radius);
+      state.userZoomScale = Math.max(0.55, Math.min(2.2, state.camera.distance / ideal));
+    }
   }, { passive: false });
 
   window.addEventListener('keydown', (e) => {
@@ -1069,25 +1134,6 @@ export function initOrigamiStudio() {
     const dt = Math.min(0.05, (now - lastTime) / 1000);
     lastTime = now;
 
-    if (state.targetCamera) {
-      const k = Math.min(1, dt * 8);
-      state.camera.yaw += (state.targetCamera.yaw - state.camera.yaw) * k;
-      state.camera.pitch += (state.targetCamera.pitch - state.camera.pitch) * k;
-      state.camera.distance += (state.targetCamera.distance - state.camera.distance) * k;
-      if (
-        Math.abs(state.targetCamera.yaw - state.camera.yaw) < 0.002 &&
-        Math.abs(state.targetCamera.pitch - state.camera.pitch) < 0.002 &&
-        Math.abs(state.targetCamera.distance - state.camera.distance) < 0.005
-      ) {
-        state.camera.yaw = state.targetCamera.yaw;
-        state.camera.pitch = state.targetCamera.pitch;
-        state.camera.distance = state.targetCamera.distance;
-        state.targetCamera = null;
-      }
-    } else if (state.autoOrbit) {
-      state.camera.yaw += dt * 0.48;
-    }
-
     const total = getActiveModel().steps.length;
     if (state.playing && total > 0) {
       if (state.stepHoldTimer > 0) {
@@ -1104,6 +1150,49 @@ export function initOrigamiStudio() {
           state.stepHoldTimer = state.pauseBetweenSteps / state.playbackSpeed;
         }
         syncPlaybackControls();
+      }
+    }
+
+    // Smooth camera transitions & continuous auto-framing around the paper's true 3D center
+    if (!state.dragFoldActive) {
+      const bounds = getCurrentPaperBounds();
+      if (state.targetCamera) {
+        const k = Math.min(1, dt * 8);
+        const tgt = state.targetCamera.target || bounds.center;
+        state.camera.yaw += (state.targetCamera.yaw - state.camera.yaw) * k;
+        state.camera.pitch += (state.targetCamera.pitch - state.camera.pitch) * k;
+        state.camera.distance += (state.targetCamera.distance - state.camera.distance) * k;
+        state.camera.target.x += (tgt.x - state.camera.target.x) * k;
+        state.camera.target.y += (tgt.y - state.camera.target.y) * k;
+        state.camera.target.z += (tgt.z - state.camera.target.z) * k;
+        if (
+          Math.abs(state.targetCamera.yaw - state.camera.yaw) < 0.002 &&
+          Math.abs(state.targetCamera.pitch - state.camera.pitch) < 0.002 &&
+          Math.abs(state.targetCamera.distance - state.camera.distance) < 0.005 &&
+          Math.hypot(tgt.x - state.camera.target.x, tgt.y - state.camera.target.y, tgt.z - state.camera.target.z) < 0.004
+        ) {
+          state.camera.yaw = state.targetCamera.yaw;
+          state.camera.pitch = state.targetCamera.pitch;
+          state.camera.distance = state.targetCamera.distance;
+          state.camera.target = { x: tgt.x, y: tgt.y, z: tgt.z };
+          state.targetCamera = null;
+        }
+      } else {
+        if (state.autoOrbit) {
+          state.camera.yaw += dt * 0.48;
+        }
+        // Keep the paper smoothly centered as folds shift its centroid
+        const kCenter = 1 - Math.exp(-dt * 6.5);
+        state.camera.target.x += (bounds.center.x - state.camera.target.x) * kCenter;
+        state.camera.target.y += (bounds.center.y - state.camera.target.y) * kCenter;
+        state.camera.target.z += (bounds.center.z - state.camera.target.z) * kCenter;
+
+        // In Free Studio, smoothly keep the paper comfortably sized even after many consecutive folds
+        if (state.mode === 'free' && gestureMode !== 'pinch') {
+          const desiredDist = Math.max(1.05, Math.min(8.4, idealDistanceForRadius(bounds.radius) * state.userZoomScale));
+          const kDist = 1 - Math.exp(-dt * 5.0);
+          state.camera.distance += (desiredDist - state.camera.distance) * kDist;
+        }
       }
     }
 
@@ -1211,6 +1300,9 @@ export function initOrigamiStudio() {
 
     const encoder = new GifEncoder(gw, gh, 0);
     const totalFrames = schedule.length;
+    const initBounds = computePaperBounds(evaluateAtPos(0).faces);
+    const gifTarget = { x: initBounds.center.x, y: initBounds.center.y, z: initBounds.center.z };
+    let gifDist = state.mode === 'free' ? idealDistanceForRadius(initBounds.radius) : baseDist;
 
     for (let i = 0; i < totalFrames; i++) {
       if (state.gifCancel) {
@@ -1221,8 +1313,19 @@ export function initOrigamiStudio() {
 
       const item = schedule[i];
       const frameData = evaluateAtPos(item.pos);
+      const fb = computePaperBounds(frameData.faces);
+      gifTarget.x += (fb.center.x - gifTarget.x) * 0.28;
+      gifTarget.y += (fb.center.y - gifTarget.y) * 0.28;
+      gifTarget.z += (fb.center.z - gifTarget.z) * 0.28;
+      if (state.mode === 'free') {
+        const targetD = idealDistanceForRadius(fb.radius) * (item.dist / Math.max(0.1, baseDist));
+        gifDist += (targetD - gifDist) * 0.24;
+      } else {
+        gifDist = item.dist;
+      }
+
       renderOrigami3D(offCtx, gw, gh, frameData, {
-        camera: { yaw: item.yaw, pitch: item.pitch, distance: item.dist, target: v3(0, 0, 0) },
+        camera: { yaw: item.yaw, pitch: item.pitch, distance: gifDist, target: { ...gifTarget } },
         frontColor: state.frontColor, backColor: state.backColor, isDark: state.isDark,
         showGuides: state.showGuides && item.progress < 1.0,
         showWireframe: state.showWireframe, showShadow: true,
@@ -1288,11 +1391,18 @@ export function initOrigamiStudio() {
   $('toggle-cp').addEventListener('click', (e) => { state.showCP = !state.showCP; e.currentTarget.classList.toggle('active', state.showCP); $('cp-overlay').style.display = state.showCP ? 'block' : 'none'; });
   $('toggle-wire').addEventListener('click', (e) => { state.showWireframe = !state.showWireframe; e.currentTarget.classList.toggle('active', state.showWireframe); });
 
-  // Camera presets
-  $('cam-3d').addEventListener('click', () => { state.autoOrbit = false; state.targetCamera = { yaw: 0.52, pitch: 0.38, distance: 4.7, target: v3(0, 0, 0) }; });
-  $('cam-front').addEventListener('click', () => { state.autoOrbit = false; state.targetCamera = { yaw: 0.0, pitch: 0.02, distance: 4.4, target: v3(0, 0, 0) }; });
-  $('cam-side').addEventListener('click', () => { state.autoOrbit = false; state.targetCamera = { yaw: 1.48, pitch: 0.22, distance: 4.7, target: v3(0, 0, 0) }; });
-  $('cam-top').addEventListener('click', () => { state.autoOrbit = false; state.targetCamera = { yaw: 0.0, pitch: 1.32, distance: 4.8, target: v3(0, 0, 0) }; });
+  // Camera presets (always re-center & auto-frame the current paper!)
+  function applyCameraPreset(yaw, pitch, fallbackDist) {
+    state.autoOrbit = false;
+    state.userZoomScale = 1.0;
+    const bounds = getCurrentPaperBounds();
+    const dist = state.mode === 'free' ? idealDistanceForRadius(bounds.radius) : fallbackDist;
+    state.targetCamera = { yaw, pitch, distance: dist, target: bounds.center };
+  }
+  $('cam-3d').addEventListener('click', () => applyCameraPreset(0.52, 0.38, 4.7));
+  $('cam-front').addEventListener('click', () => applyCameraPreset(0.0, 0.02, 4.4));
+  $('cam-side').addEventListener('click', () => applyCameraPreset(1.48, 0.22, 4.7));
+  $('cam-top').addEventListener('click', () => applyCameraPreset(0.0, 1.32, 4.8));
   $('cam-spin').addEventListener('click', (e) => { state.autoOrbit = !state.autoOrbit; e.currentTarget.classList.toggle('active', state.autoOrbit); });
 
   // Playback controls
