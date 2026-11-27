@@ -8,7 +8,7 @@
 import { v3, sub, dot, cross, norm, screenToPlane, worldToCamera, projectPoint } from './math3d.js';
 import { compilePlanarTimeline, compilePlanarStep, computeSnapPoints, createInitialPaper } from './planarEngine.js';
 import { ORIGAMI_CATALOG, PAPER_PRESETS } from './kinematicModels.js';
-import { renderOrigami3D, renderCreasePattern2D, computeLayerThick } from './renderer3d.js';
+import { renderOrigami3D, renderCreasePattern2D, computeLayerThick, isScreenPointOccluded } from './renderer3d.js';
 import { GifEncoder } from './gifEncoder.js';
 import { UI_STRINGS, getInitialLang, saveLang, localizeModel } from './i18n.js';
 
@@ -687,11 +687,12 @@ export function initOrigamiStudio() {
     return { x: e.clientX - rect.left, y: e.clientY - rect.top, w: rect.width, h: rect.height };
   }
 
-  function findNearestSnap(sx, sy, w, h, radiusPx = 28, excludePt = null, allowMinor = true) {
+  function findNearestSnap(sx, sy, w, h, radiusPx = 28, excludePt = null, allowMinor = true, checkOcclusion = false) {
     if (!lastCam || state.snapPoints.length === 0) return null;
     const faces = state.compiledPlanar?.finalState?.faces;
     const layerThick = computeLayerThick(faces);
     const viewSideZ = (lastCam.eye.z - lastCam.target.z) >= 0 ? 1 : -1;
+    const paperItems = checkOcclusion ? (lastCam.paperItems || null) : null;
     let best = null, bestScore = radiusPx;
     for (const sp of state.snapPoints) {
       if (!allowMinor && (sp.kind === 'quarter' || sp.kind === 'intersect')) continue;
@@ -701,6 +702,7 @@ export function initOrigamiStudio() {
       const pr = projectPoint(worldToCamera(spWorld, lastCam), w, h);
       const d = Math.hypot(pr.x - sx, pr.y - sy);
       if (d >= radiusPx) continue;
+      if (paperItems && isScreenPointOccluded(pr.x, pr.y, spLayer * viewSideZ, paperItems)) continue;
       // Slight preference for vertices/intersections/center over quarter points when close
       const bias = sp.kind === 'vertex' ? 0 : sp.kind === 'center' ? 1.5 : sp.kind === 'intersect' ? 2.0 : sp.kind === 'midpoint' ? 2.5 : 5.5;
       const score = d + bias;
@@ -1034,7 +1036,7 @@ export function initOrigamiStudio() {
         syncPlaybackControls();
       }
       const grabRadius = isMobileViewport() ? 42 : 30;
-      const snap = findNearestSnap(x, y, w, h, grabRadius, null, false);
+      const snap = findNearestSnap(x, y, w, h, grabRadius, null, false, true);
       const raw = screenToPlane(x, y, w, h, lastCam, v3(0, 0, 0), v3(0, 0, 1));
       const onPaper = snap || isPointOnPaper(raw);
 
@@ -1128,7 +1130,8 @@ export function initOrigamiStudio() {
     // 4. Desktop hover feedback when idle in Free Studio
     if (activePointers.size === 0 && state.mode === 'free' && !state.playing && lastCam) {
       const worldPt = screenToPlane(x, y, w, h, lastCam, v3(0, 0, 0), v3(0, 0, 1));
-      const snap = findNearestSnap(x, y, w, h, 26, null, state.freeInteractMode === 'line');
+      const isLineMode = state.freeInteractMode === 'line';
+      const snap = findNearestSnap(x, y, w, h, 26, null, isLineMode, !isLineMode);
       state.hoveredSnap = snap;
       state.hoverWorld = snap ? v3(snap.x, snap.y, 0) : (worldPt ? v3(worldPt.x, worldPt.y, 0) : null);
 

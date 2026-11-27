@@ -325,7 +325,7 @@ export function compilePlanarStep(baseState, step) {
         const info = foldInfos[f.foldIdx];
         const ang = info.targetAngle * e;
         let layer = f.layer;
-        if (e > 0.65 && info.angleDeg >= 165) {
+        if (e > 0.51 && info.angleDeg >= 165) {
           layer = info.fType === 'valley'
             ? maxAll + 1 + (maxAll - f.layer)
             : minAll - 1 - (f.layer - minAll);
@@ -431,7 +431,7 @@ export function compilePlanarStep(baseState, step) {
           return { pts: pc.pts, uvs: pc.uvs, layer: pc.layer };
         }
         if (pc.group === 1) {
-          const layer = (e > 0.6 && angleDeg >= 165)
+          const layer = (e > 0.51 && angleDeg >= 165)
             ? (isBackPleat ? minAll - 1 - (pc.layer - minAll) : maxAll + 1 + (maxAll - pc.layer))
             : pc.layer;
           return {
@@ -441,7 +441,7 @@ export function compilePlanarStep(baseState, step) {
           };
         }
         // Group 2: first rotate around p1 by a1, then around q1Moved by a2 (stays parallel!)
-        const layer = (e > 0.6 && angleDeg >= 165)
+        const layer = (e > 0.51 && angleDeg >= 165)
           ? (isBackPleat ? minAll - 3 - (pc.layer - minAll) : maxAll + 3 + pc.layer)
           : pc.layer;
         return {
@@ -541,7 +541,7 @@ export function compilePlanarStep(baseState, step) {
 
     for (const f of moveFaces) {
       let layer = f.layer;
-      if (!isPrecrease && foldProgress > 0.65 && angleDeg >= 165) {
+      if (!isPrecrease && foldProgress > 0.51 && angleDeg >= 165) {
         layer = foldType === 'valley'
           ? maxAll + 1 + (moveMax - f.layer)
           : minAll - 1 - (f.layer - moveMin);

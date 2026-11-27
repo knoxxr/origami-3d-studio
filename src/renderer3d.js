@@ -43,26 +43,105 @@ function shadePaperColor(baseRgb, normal, viewDir, layer, isBack, isDark) {
 
   // Hemisphere ambient + directional diffuse
   const hemi = 0.5 + 0.5 * n.y;
-  const ambient = (isDark ? 0.34 : 0.40) + hemi * 0.12;
+  const ambient = (isDark ? 0.35 : 0.41) + hemi * 0.12;
   const diffuse = nDotKey * 0.52 + nDotFill * 0.22 + nDotRim * 0.10;
-  // Subtle layer depth cue so overlapping paper folds remain distinct
-  const layerCue = Math.max(-0.04, Math.min(0.05, layer * 0.01));
+  // Whisper-subtle layer cue (real depth comes from inter-flap contact shadows, not grey tinting)
+  const layerCue = Math.max(-0.012, Math.min(0.014, layer * 0.0022));
   const intensity = Math.max(0.28, Math.min(1.22, ambient + diffuse + layerCue));
 
   const r = clamp255(baseRgb.r * intensity + spec * 255);
   const g = clamp255(baseRgb.g * intensity + spec * 250);
   const b = clamp255(baseRgb.b * intensity + spec * 242);
 
-  // Subtle crease edge stroke (softly blended tone so coplanar creases never look cut)
-  const edgeFactor = isBack ? 0.85 : 0.78;
-  const er = clamp255(r * edgeFactor);
-  const eg = clamp255(g * edgeFactor);
-  const eb = clamp255(b * edgeFactor);
+  // Subtle directional satin-paper gradient stops (top-left lit -> bottom-right shaded)
+  const lr = clamp255(r * 1.032 + 2);
+  const lg = clamp255(g * 1.030 + 2);
+  const lb = clamp255(b * 1.024 + 1);
+  const dr = clamp255(r * 0.966);
+  const dg = clamp255(g * 0.964);
+  const db = clamp255(b * 0.962);
+
+  // Distinct physical tones for outer paper cut edges, bent fold ridges, and flat embossed creases
+  const borderFactor = isBack ? 0.77 : 0.72;
+  const br = clamp255(r * borderFactor);
+  const bg = clamp255(g * borderFactor);
+  const bb = clamp255(b * borderFactor);
+
+  const foldFactor = isBack ? 0.80 : 0.74;
+  const fr = clamp255(r * foldFactor);
+  const fg = clamp255(g * foldFactor);
+  const fb = clamp255(b * foldFactor);
+
+  const creaseFactor = isBack ? 0.66 : 0.60;
+  const cr = clamp255(r * creaseFactor);
+  const cg = clamp255(g * creaseFactor);
+  const cb = clamp255(b * creaseFactor);
 
   return {
     fill: `rgb(${r},${g},${b})`,
-    stroke: `rgb(${er},${eg},${eb})`,
+    fillLight: `rgb(${lr},${lg},${lb})`,
+    fillDark: `rgb(${dr},${dg},${db})`,
+    stroke: `rgb(${fr},${fg},${fb})`,
+    borderStroke: `rgb(${br},${bg},${bb})`,
+    foldStroke: `rgb(${fr},${fg},${fb})`,
+    foldHighlight: isBack ? 'rgba(255,252,246,0.22)' : 'rgba(255,248,242,0.16)',
+    creaseStroke: `rgba(${cr},${cg},${cb},${isBack ? 0.24 : 0.21})`,
   };
+}
+
+function pointInScrPoly(px, py, pts) {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const xi = pts[i].x, yi = pts[i].y, xj = pts[j].x, yj = pts[j].y;
+    if (((yi > py) !== (yj > py)) && (px < ((xj - xi) * (py - yi)) / (yj - yi + 1e-12) + xi)) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+function distToSegmentSq2D(px, py, ax, ay, bx, by) {
+  const vx = bx - ax, vy = by - ay;
+  const lenSq = vx * vx + vy * vy;
+  if (lenSq < 1e-6) return (px - ax) * (px - ax) + (py - ay) * (py - ay);
+  const t = Math.max(0, Math.min(1, ((px - ax) * vx + (py - ay) * vy) / lenSq));
+  const dx = px - (ax + t * vx);
+  const dy = py - (ay + t * vy);
+  return dx * dx + dy * dy;
+}
+
+/**
+ * Check if a projected 2D snap point at spLayerKey is strictly buried behind a
+ * camera-facing front paper face (excluding points that lie on the covering face's edge).
+ */
+export function isScreenPointOccluded(px, py, spLayerKey, paperItems, edgeMarginPx = 3.5) {
+  if (!paperItems || paperItems.length === 0) return false;
+  const marginSq = edgeMarginPx * edgeMarginPx;
+  for (let i = paperItems.length - 1; i >= 0; i--) {
+    const it = paperItems[i];
+    if (it.isSpine || it.layerKey <= spLayerKey + 0.05) continue;
+    if (px <= it.minX + 1.5 || px >= it.maxX - 1.5 || py <= it.minY + 1.5 || py >= it.maxY - 1.5) continue;
+    const pts = it.scrPts;
+    if (!pointInScrPoly(px, py, pts)) continue;
+    let nearEdge = false;
+    for (let k = 0; k < pts.length; k++) {
+      const a = pts[k], b = pts[(k + 1) % pts.length];
+      if (distToSegmentSq2D(px, py, a.x, a.y, b.x, b.y) <= marginSq) {
+        nearEdge = true;
+        break;
+      }
+    }
+    if (!nearEdge) return true;
+  }
+  return false;
+}
+
+function isBoundaryUVEdge(u1, u2) {
+  const eps = 3.5e-3;
+  return (u1.u <= eps && u2.u <= eps) ||
+         (u1.u >= 1 - eps && u2.u >= 1 - eps) ||
+         (u1.v <= eps && u2.v <= eps) ||
+         (u1.v >= 1 - eps && u2.v >= 1 - eps);
 }
 
 /**
@@ -164,6 +243,20 @@ function sortFacesBackToFront(items) {
         continue;
       }
 
+      // Spine vs sheet: never let a buried fold spine punch through a covering front sheet
+      if (A.isSpine !== B.isSpine) {
+        const spine = A.isSpine ? A : B;
+        const sheet = A.isSpine ? B : A;
+        const spineIdx = A.isSpine ? i : j;
+        const sheetIdx = A.isSpine ? j : i;
+        if (sheet.layerKey > spine.spineMaxLayerKey + 0.05) {
+          adj[spineIdx].push(sheetIdx); indeg[sheetIdx]++; continue;
+        }
+        if (sheet.layerKey < spine.spineMinLayerKey - 0.05) {
+          adj[sheetIdx].push(spineIdx); indeg[spineIdx]++; continue;
+        }
+      }
+
       // Parallel stacked paper sheets -> order strictly by layerKey (immune to large-vs-small avgZ distortion!)
       if (!A.isSpine && !B.isSpine && Math.abs(dot(A.camNormal, B.camNormal)) > 0.992) {
         const planeDist = Math.abs(dot(sub(A.camCenter, B.camCenter), B.camNormal));
@@ -199,15 +292,20 @@ function sortFacesBackToFront(items) {
     }
   }
 
-  // Kahn's topological sort with layer-aware cycle breaking
+  // Kahn's topological sort: among ready nodes (indeg === 0), prefer lowest layerKey
+  // so coplanar stacked paper layers stay contiguous for unified flap shadows,
+  // while preserving avgZ descending order within the same layer.
   const visited = new Uint8Array(n);
   const result = [];
   for (let step = 0; step < n; step++) {
     let pick = -1;
+    let pickLayer = Infinity;
     for (let i = 0; i < n; i++) {
       if (!visited[i] && indeg[i] === 0) {
-        pick = i;
-        break;
+        if (pick === -1 || items[i].layerKey < pickLayer - 0.05) {
+          pick = i;
+          pickLayer = items[i].layerKey;
+        }
       }
     }
     if (pick === -1) {
@@ -269,7 +367,7 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
   const frontRgb = hexToRgb(frontColor);
   const backRgb = hexToRgb(backColor);
 
-  // 2. Soft ground contact shadow projected neatly below the paper's actual vertical span
+  // 2. Soft unified studio desk shadow projected neatly below the paper's actual vertical span
   if (showShadow && faces.length > 0) {
     let minY = Infinity, maxY = -Infinity;
     for (let i = 0; i < faces.length; i++) {
@@ -282,11 +380,14 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
     const spanY = Math.max(0.4, maxY - minY);
     const floorY = minY - Math.max(0.24, Math.min(0.42, spanY * 0.18));
     ctx.save();
-    ctx.fillStyle = isDark ? 'rgba(0, 0, 0, 0.24)' : 'rgba(65, 48, 32, 0.085)';
+    if ('filter' in ctx) ctx.filter = 'blur(7px)';
+    ctx.fillStyle = isDark ? 'rgba(0, 0, 0, 0.34)' : 'rgba(65, 48, 32, 0.135)';
+    ctx.beginPath();
+    let hasShadow = false;
     for (let i = 0; i < faces.length; i++) {
       const pts = faces[i].pts;
       if (pts.length < 3) continue;
-      ctx.beginPath();
+      const shPts = [];
       let valid = true;
       for (let k = 0; k < pts.length; k++) {
         // Project softly along light vector onto floorY
@@ -295,15 +396,23 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
         const sp = v3(p.x + drop * 0.14, floorY, p.z - drop * 0.16);
         const cp = worldToCamera(sp, cam);
         if (cp.z <= 0.1) { valid = false; break; }
-        const pr = projectPoint(cp, width, height);
-        if (k === 0) ctx.moveTo(pr.x, pr.y);
-        else ctx.lineTo(pr.x, pr.y);
+        shPts.push(projectPoint(cp, width, height));
       }
-      if (valid) {
-        ctx.closePath();
-        ctx.fill();
+      if (!valid) continue;
+      // Enforce consistent CCW screen winding so nonzero fill computes a seamless union with zero holes
+      let area2 = 0;
+      for (let k = 0; k < shPts.length; k++) {
+        const a = shPts[k], b = shPts[(k + 1) % shPts.length];
+        area2 += a.x * b.y - b.x * a.y;
       }
+      if (Math.abs(area2) < 1.0) continue;
+      if (area2 < 0) shPts.reverse();
+      ctx.moveTo(shPts[0].x, shPts[0].y);
+      for (let k = 1; k < shPts.length; k++) ctx.lineTo(shPts[k].x, shPts[k].y);
+      ctx.closePath();
+      hasShadow = true;
     }
+    if (hasShadow) ctx.fill('nonzero');
     ctx.restore();
   }
 
@@ -359,6 +468,7 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
 
     renderItems.push({
       worldPts,
+      worldNormal: normal,
       scrPts,
       camPts,
       camCenter,
@@ -370,13 +480,14 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
       shaded,
       frontFacing,
       isSpine: false,
+      edgeKinds: new Array(f.pts.length).fill('fold'),
       origFace: f,
     });
   }
 
-  // 3b. Seal folded crease edges with real 3D fold-spine bridge quads so adjacent
-  //     hinged layers never look like disconnected floating slices when viewed edge-on!
-  if (!showWireframe && renderItems.length > 1) {
+  // 3b. Classify every polygon edge ('border' | 'fold' | 'crease') using exact UV adjacency
+  //     and emit 3D fold-spine bridge quads ONLY for visibly oblique folded edges (never hairlines).
+  if (!showWireframe && renderItems.length >= 1) {
     const edgeBuckets = new Map();
     const qKey = (u, v) => `${Math.round(u * 120)},${Math.round(v * 120)}`;
     const uvMatch = (a, b) => Math.hypot(a.u - b.u, a.v - b.v) < 3.5e-3;
@@ -389,11 +500,19 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
       for (let e = 0; e < n; e++) {
         const j = (e + 1) % n;
         const u1 = f.uvs[e], u2 = f.uvs[j];
+        if (isBoundaryUVEdge(u1, u2)) {
+          item.edgeKinds[e] = 'border';
+          continue;
+        }
         if (Math.hypot(u2.u - u1.u, u2.v - u1.v) < 4e-3) continue;
         const key = qKey((u1.u + u2.u) * 0.5, (u1.v + u2.v) * 0.5);
         let bucket = edgeBuckets.get(key);
         if (!bucket) { bucket = []; edgeBuckets.set(key, bucket); }
-        bucket.push({ fi, u1, u2, w1: item.worldPts[e], w2: item.worldPts[j] });
+        bucket.push({
+          fi, ei: e, u1, u2,
+          w1: item.worldPts[e], w2: item.worldPts[j],
+          s1: item.scrPts[e], s2: item.scrPts[j],
+        });
       }
     }
 
@@ -405,17 +524,43 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
         for (let j = i + 1; j < bucket.length; j++) {
           const eb = bucket[j];
           if (ea.fi === eb.fi) continue;
-          let b1 = null, b2 = null;
+          let b1 = null, b2 = null, sb1 = null, sb2 = null;
           if (uvMatch(ea.u1, eb.u2) && uvMatch(ea.u2, eb.u1)) {
-            b1 = eb.w2; b2 = eb.w1;
+            b1 = eb.w2; b2 = eb.w1; sb1 = eb.s2; sb2 = eb.s1;
           } else if (uvMatch(ea.u1, eb.u1) && uvMatch(ea.u2, eb.u2)) {
-            b1 = eb.w1; b2 = eb.w2;
+            b1 = eb.w1; b2 = eb.w2; sb1 = eb.s1; sb2 = eb.s2;
           }
           if (!b1) continue;
+
+          const itemA = renderItems[ea.fi];
+          const itemB = renderItems[eb.fi];
+          const layerDiff = Math.abs((itemA.origFace.layer || 0) - (itemB.origFace.layer || 0));
+          const normDot = dot(itemA.worldNormal, itemB.worldNormal);
+
+          // Coplanar same-layer split -> soft embossed crease (NOT a dark cut!)
+          if (layerDiff < 0.05 && normDot > 0.985 && itemA.frontFacing === itemB.frontFacing) {
+            itemA.edgeKinds[ea.ei] = 'crease';
+            itemB.edgeKinds[eb.ei] = 'crease';
+            continue;
+          }
+
+          // Distinct layer or bent hinge -> true folded ridge
+          itemA.edgeKinds[ea.ei] = 'fold';
+          itemB.edgeKinds[eb.ei] = 'fold';
+
           const a1 = ea.w1, a2 = ea.w2;
           const dz = Math.max(Math.abs(a1.z - b1.z), Math.abs(a2.z - b2.z));
           const xyErr = Math.max(Math.hypot(a1.x - b1.x, a1.y - b1.y), Math.hypot(a2.x - b2.x, a2.y - b2.y));
-          if (dz < 0.0003 || dz > 0.08 || xyErr > 0.03) continue;
+          if (dz < 0.0003 || dz > 0.08 || xyErr > 0.03 || layerDiff > 2.5) continue;
+
+          // Only emit fold-spine bridge when visibly oblique on screen (prevents face-on hairlines!)
+          const ex = ea.s2.x - ea.s1.x, ey = ea.s2.y - ea.s1.y;
+          const eLen = Math.hypot(ex, ey);
+          const perpW = eLen > 1 ? Math.max(
+            Math.abs((sb1.x - ea.s1.x) * (-ey) + (sb1.y - ea.s1.y) * ex) / eLen,
+            Math.abs((sb2.x - ea.s1.x) * (-ey) + (sb2.y - ea.s1.y) * ex) / eLen
+          ) : 0;
+          if (perpW < 0.75) continue;
 
           const qWorld = [a1, a2, b2, b1];
           const qCam = qWorld.map(p => worldToCamera(p, cam));
@@ -430,8 +575,6 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
             if (cz < minZ) minZ = cz; if (cz > maxZ) maxZ = cz;
             sumZ += cz;
           }
-          const itemA = renderItems[ea.fi];
-          const itemB = renderItems[eb.fi];
           const qCenter = polyCentroid(qWorld);
           const qView = norm(sub(cam.eye, qCenter));
           const qNorm = polyNormal(qWorld);
@@ -439,19 +582,17 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
           let qCamN = polyNormal(qCam);
           if (dot(qCamN, scale(qCamCenter, -1)) < 0) qCamN = scale(qCamN, -1);
 
-          // Match outer visible face tone so the bent paper spine blends seamlessly
-          const useFront = itemA.frontFacing && itemB.frontFacing;
-          const useBack = !itemA.frontFacing && !itemB.frontFacing;
-          const baseRgb = useFront ? frontRgb : useBack ? backRgb : {
-            r: Math.round(frontRgb.r * 0.45 + backRgb.r * 0.55),
-            g: Math.round(frontRgb.g * 0.45 + backRgb.g * 0.55),
-            b: Math.round(frontRgb.b * 0.45 + backRgb.b * 0.55),
-          };
+          // Real origami spine wraps the outer camera-facing paper surface cleanly
+          const outerItem = itemA.layerKey >= itemB.layerKey ? itemA : itemB;
+          const baseRgb = outerItem.frontFacing ? frontRgb : backRgb;
           const avgLayer = ((itemA.origFace.layer || 0) + (itemB.origFace.layer || 0)) * 0.5;
-          const shaded = shadePaperColor(baseRgb, qNorm, qView, avgLayer, !useFront, isDark);
+          const shaded = shadePaperColor(baseRgb, qNorm, qView, avgLayer, !outerItem.frontFacing, isDark);
+          const spineMinLayerKey = Math.min(itemA.layerKey, itemB.layerKey);
+          const spineMaxLayerKey = Math.max(itemA.layerKey, itemB.layerKey);
 
           spineItems.push({
             worldPts: qWorld,
+            worldNormal: qNorm,
             scrPts: qScr,
             camPts: qCam,
             camCenter: qCamCenter,
@@ -459,11 +600,13 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
             minX, maxX, minY, maxY,
             minZ, maxZ,
             avgZ: sumZ * 0.25,
-            layerKey: (itemA.layerKey + itemB.layerKey) * 0.5,
+            layerKey: spineMinLayerKey + 0.01,
+            spineMinLayerKey,
+            spineMaxLayerKey,
             shaded,
-            frontFacing: useFront,
+            frontFacing: outerItem.frontFacing,
             isSpine: true,
-            origFace: itemA.origFace,
+            origFace: outerItem.origFace,
           });
         }
       }
@@ -472,27 +615,28 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
   }
 
   const sorted = sortFacesBackToFront(renderItems);
+  const paperItems = sorted.filter(it => !it.isSpine);
+  let minPaperLayerKey = Infinity;
+  for (let i = 0; i < paperItems.length; i++) {
+    if (paperItems[i].layerKey < minPaperLayerKey) minPaperLayerKey = paperItems[i].layerKey;
+  }
 
-  // 4. Paint paper polygons back-to-front
+  // 4. Paint paper polygons back-to-front with unified inter-flap shadows,
+  //    subtle satin paper sheen, and physically distinct border/fold/crease edges.
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
-  for (let i = 0; i < sorted.length; i++) {
-    const it = sorted[i];
-    const pts = it.scrPts;
-    ctx.beginPath();
-    ctx.moveTo(pts[0].x, pts[0].y);
-    for (let k = 1; k < pts.length; k++) {
-      ctx.lineTo(pts[k].x, pts[k].y);
-    }
-    ctx.closePath();
 
-    if (!showWireframe) {
-      ctx.fillStyle = it.shaded.fill;
-      ctx.fill();
-      ctx.strokeStyle = it.isSpine ? it.shaded.fill : it.shaded.stroke;
-      ctx.lineWidth = it.isSpine ? 0.65 : 0.85;
-      ctx.stroke();
-    } else {
+  const tracePoly = (pts) => {
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let k = 1; k < pts.length; k++) ctx.lineTo(pts[k].x, pts[k].y);
+    ctx.closePath();
+  };
+
+  if (showWireframe) {
+    for (let i = 0; i < sorted.length; i++) {
+      const it = sorted[i];
+      ctx.beginPath();
+      tracePoly(it.scrPts);
       ctx.fillStyle = it.frontFacing
         ? 'rgba(207, 68, 54, 0.16)'
         : 'rgba(180, 170, 155, 0.14)';
@@ -500,6 +644,145 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
       ctx.strokeStyle = isDark ? 'rgba(255,255,255,0.65)' : 'rgba(40,35,30,0.65)';
       ctx.lineWidth = 1.25;
       ctx.stroke();
+    }
+  } else {
+    let idx = 0;
+    while (idx < sorted.length) {
+      const first = sorted[idx];
+      if (first.isSpine) {
+        ctx.beginPath();
+        tracePoly(first.scrPts);
+        ctx.fillStyle = first.shaded.fill;
+        ctx.fill();
+        idx++;
+        continue;
+      }
+
+      // Group contiguous coplanar faces on the same layer into ONE flap island
+      const firstLayerBin = Math.round(first.layerKey * 10);
+      let end = idx + 1;
+      while (end < sorted.length) {
+        const nxt = sorted[end];
+        if (nxt.isSpine) break;
+        if (Math.round(nxt.layerKey * 10) !== firstLayerBin) break;
+        if (nxt.frontFacing !== first.frontFacing) break;
+        if (dot(nxt.worldNormal, first.worldNormal) < 0.985) break;
+        end++;
+      }
+
+      // Pass 4a: Unified inter-flap contact shadow (zero shadow across internal flat creases!)
+      const isRaised = first.layerKey > minPaperLayerKey + 0.05;
+      const tilt = 1 - Math.abs(first.worldNormal.z);
+      const isTilted = tilt > 0.04;
+      if (showShadow && (isRaised || isTilted)) {
+        ctx.save();
+        ctx.beginPath();
+        for (let r = idx; r < end; r++) tracePoly(sorted[r].scrPts);
+        ctx.shadowColor = isDark
+          ? (isTilted ? 'rgba(0, 0, 0, 0.40)' : 'rgba(0, 0, 0, 0.30)')
+          : (isTilted ? 'rgba(42, 28, 16, 0.20)' : 'rgba(42, 28, 16, 0.14)');
+        ctx.shadowBlur = isTilted ? (4.4 + tilt * 6.4) : 3.6;
+        ctx.shadowOffsetX = isTilted ? (1.3 + tilt * 2.6) : 1.1;
+        ctx.shadowOffsetY = isTilted ? (1.9 + tilt * 3.6) : 1.6;
+        ctx.fillStyle = first.shaded.fill;
+        ctx.fill();
+        ctx.restore();
+      }
+
+      // Pass 4b: Subtle satin key-light paper fill + anti-alias seam seal stroke
+      for (let r = idx; r < end; r++) {
+        const it = sorted[r];
+        ctx.beginPath();
+        tracePoly(it.scrPts);
+        const spanW = it.maxX - it.minX;
+        const spanH = it.maxY - it.minY;
+        if (spanW > 10 || spanH > 10) {
+          const grad = ctx.createLinearGradient(it.minX, it.minY, it.maxX, it.maxY);
+          grad.addColorStop(0, it.shaded.fillLight);
+          grad.addColorStop(0.52, it.shaded.fill);
+          grad.addColorStop(1, it.shaded.fillDark);
+          ctx.fillStyle = grad;
+        } else {
+          ctx.fillStyle = it.shaded.fill;
+        }
+        ctx.fill();
+        // Micro same-color seal eliminates Canvas 2D anti-aliasing seams between coplanar triangles
+        ctx.strokeStyle = it.shaded.fill;
+        ctx.lineWidth = 0.55;
+        ctx.stroke();
+      }
+
+      // Pass 4c: Physically distinct edge strokes (delicate embossed crease vs crisp border/fold)
+      let hasCrease = false, hasBorder = false, hasFold = false;
+      ctx.beginPath();
+      for (let r = idx; r < end; r++) {
+        const it = sorted[r];
+        const pts = it.scrPts;
+        const kinds = it.edgeKinds;
+        for (let e = 0; e < pts.length; e++) {
+          const k = kinds[e];
+          if (k === 'crease') {
+            hasCrease = true;
+            const a = pts[e], b = pts[(e + 1) % pts.length];
+            ctx.moveTo(a.x, a.y);
+            ctx.lineTo(b.x, b.y);
+          } else if (k === 'border') {
+            hasBorder = true;
+          } else {
+            hasFold = true;
+          }
+        }
+      }
+      if (hasCrease) {
+        ctx.strokeStyle = first.shaded.creaseStroke;
+        ctx.lineWidth = 0.65;
+        ctx.stroke();
+      }
+
+      if (hasBorder) {
+        ctx.beginPath();
+        for (let r = idx; r < end; r++) {
+          const it = sorted[r];
+          const pts = it.scrPts;
+          const kinds = it.edgeKinds;
+          for (let e = 0; e < pts.length; e++) {
+            if (kinds[e] === 'border') {
+              const a = pts[e], b = pts[(e + 1) % pts.length];
+              ctx.moveTo(a.x, a.y);
+              ctx.lineTo(b.x, b.y);
+            }
+          }
+        }
+        ctx.strokeStyle = first.shaded.borderStroke;
+        ctx.lineWidth = 0.82;
+        ctx.stroke();
+      }
+
+      if (hasFold) {
+        ctx.beginPath();
+        for (let r = idx; r < end; r++) {
+          const it = sorted[r];
+          const pts = it.scrPts;
+          const kinds = it.edgeKinds;
+          for (let e = 0; e < pts.length; e++) {
+            if (kinds[e] === 'fold') {
+              const a = pts[e], b = pts[(e + 1) % pts.length];
+              ctx.moveTo(a.x, a.y);
+              ctx.lineTo(b.x, b.y);
+            }
+          }
+        }
+        ctx.strokeStyle = first.shaded.foldStroke;
+        ctx.lineWidth = 0.88;
+        ctx.stroke();
+
+        // Subtle soft paper-bend catchlight along folded ridges
+        ctx.strokeStyle = first.shaded.foldHighlight;
+        ctx.lineWidth = 0.55;
+        ctx.stroke();
+      }
+
+      idx = end;
     }
   }
 
@@ -534,9 +817,12 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
     ctx.restore();
   }
 
+  // Expose sorted screen-space paper faces for snap occlusion checks in app.js
+  cam.paperItems = paperItems;
+
   // 6. Free Fold Studio interactive overlays (snap points, rubber-band line, side highlight)
   if (freeOverlay) {
-    drawFreeStudioOverlay(ctx, width, height, cam, freeOverlay, isDark, layerThick, viewSideZ);
+    drawFreeStudioOverlay(ctx, width, height, cam, freeOverlay, isDark, layerThick, viewSideZ, paperItems);
   }
 
   // 7. Optional HUD Overlay (used when baking captions into exported GIF frames!)
@@ -552,7 +838,27 @@ function snapWorldPos(sp, layerThick, viewSideZ) {
   return v3(sp.x, sp.y, (sp.z || 0) + layer * layerThick);
 }
 
-function drawFreeStudioOverlay(ctx, width, height, cam, overlay, isDark, layerThick = 0.0014, viewSideZ = 1) {
+function isExposedStructuralCorner(px, py, spLayerKey, paperItems) {
+  if (!paperItems || paperItems.length === 0) return true;
+  for (let i = 0; i < paperItems.length; i++) {
+    const it = paperItems[i];
+    if (it.layerKey < spLayerKey - 0.15) continue;
+    const pts = it.scrPts;
+    const kinds = it.edgeKinds;
+    for (let k = 0; k < pts.length; k++) {
+      if (Math.hypot(pts[k].x - px, pts[k].y - py) < 5.5) {
+        const prevKind = kinds[(k + pts.length - 1) % pts.length];
+        const nextKind = kinds[k];
+        if (prevKind === 'border' || prevKind === 'fold' || nextKind === 'border' || nextKind === 'fold') {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+function drawFreeStudioOverlay(ctx, width, height, cam, overlay, isDark, layerThick = 0.0014, viewSideZ = 1, paperItems = []) {
   const {
     interactMode = 'drag',
     snapPoints, hoveredSnap, p1, p2, hoverWorld, foldType, hoverSide, previewFaces,
@@ -612,7 +918,7 @@ function drawFreeStudioOverlay(ctx, width, height, cam, overlay, isDark, layerTh
       ctx.stroke();
       return;
     }
-    const r = isHighlight ? 9 : sp.kind === 'center' ? 5.5 : sp.kind === 'vertex' ? 5.2 : 4.2;
+    const r = isHighlight ? 9 : sp.kind === 'center' ? 5.5 : sp.kind === 'vertex' ? 5.0 : 3.8;
     ctx.beginPath();
     ctx.arc(pr.x, pr.y, r, 0, Math.PI * 2);
     ctx.fillStyle = isHighlight ? foldAccent : 'rgba(255,255,255,0.88)';
@@ -624,27 +930,32 @@ function drawFreeStudioOverlay(ctx, width, height, cam, overlay, isDark, layerTh
 
   // ---- Mode A: Direct Drag-to-Fold / Unfold visual cues ----
   if (interactMode === 'drag') {
-    // 1. When idle (not dragging), show subtle, touch-friendly glowing grab rings glued to corners & major midpoints
+    // 1. When idle (not dragging), show clean, occlusion-culled grab rings ONLY on visible corners & major edges
     if (!dragStart && snapPoints) {
       for (const sp of snapPoints) {
         if (sp.kind === 'center' || sp.kind === 'quarter' || sp.kind === 'intersect') continue;
-        if (sp.kind === 'midpoint' && (sp.edgeLen ?? 1) < 0.30) continue;
+        if (sp.kind === 'midpoint' && (sp.edgeLen ?? 1) < 0.34) continue;
+        const spLayer = viewSideZ >= 0 ? (sp.maxLayer ?? 0) : (sp.minLayer ?? 0);
+        const spLayerKey = spLayer * viewSideZ;
         const pr = projectPoint(worldToCamera(snapWorldPos(sp, layerThick, viewSideZ), cam), width, height);
         const isHov = hoveredSnap && hoveredSnap === sp;
-        const rad = isHov ? 9.5 : sp.kind === 'vertex' ? 6.2 : 3.8;
+        if (!isHov && isScreenPointOccluded(pr.x, pr.y, spLayerKey, paperItems)) continue;
 
-        if (sp.kind === 'vertex' || isHov) {
+        const isCorner = sp.kind === 'vertex' && isExposedStructuralCorner(pr.x, pr.y, spLayerKey, paperItems);
+        const rad = isHov ? 8.8 : isCorner ? 4.8 : 3.1;
+
+        if (isCorner || isHov) {
           ctx.beginPath();
-          ctx.arc(pr.x, pr.y, rad + 3.5, 0, Math.PI * 2);
-          ctx.fillStyle = isMountain ? 'rgba(220, 38, 38, 0.16)' : 'rgba(37, 99, 235, 0.16)';
+          ctx.arc(pr.x, pr.y, rad + (isHov ? 3.5 : 2.6), 0, Math.PI * 2);
+          ctx.fillStyle = isMountain ? 'rgba(220, 38, 38, 0.14)' : 'rgba(37, 99, 235, 0.14)';
           ctx.fill();
         }
         ctx.beginPath();
         ctx.arc(pr.x, pr.y, rad, 0, Math.PI * 2);
-        ctx.fillStyle = isHov ? foldAccent : 'rgba(255, 255, 255, 0.94)';
+        ctx.fillStyle = isHov ? foldAccent : (isCorner ? 'rgba(255, 255, 255, 0.94)' : 'rgba(255, 255, 255, 0.78)');
         ctx.fill();
-        ctx.lineWidth = isHov ? 2.4 : 1.7;
-        ctx.strokeStyle = isHov ? '#ffffff' : (sp.kind === 'vertex' ? foldAccent : '#78716c');
+        ctx.lineWidth = isHov ? 2.3 : (isCorner ? 1.65 : 1.25);
+        ctx.strokeStyle = isHov ? '#ffffff' : (isCorner ? foldAccent : 'rgba(120, 113, 108, 0.78)');
         ctx.stroke();
       }
     }
