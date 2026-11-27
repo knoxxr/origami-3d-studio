@@ -303,5 +303,46 @@ console.log('\n=== 7. Verifying Double-Sided Folding (Front vs Back, Back Pleat,
   console.log('  [OK] Front/Back folds, back pleat, back pre-crease, bottom-layer scope & 3D hinge continuity verified');
 }
 
+console.log('\n=== 8. Verifying Partial Single-Flap Back-Folding, Pocket Tuck & UV-Island Isolation ===');
+{
+  // 1. Fold right half over onto front, then fold ONLY the tip of that top flap back in opposite direction (Front/Valley)
+  const tlBackTip = compilePlanarTimeline({ width: 2, height: 2 }, [
+    { type: 'valley', p1: [0, -1], p2: [0, 1], side: -1, angleDeg: 180 },
+    { type: 'valley', p1: [-0.5, -1], p2: [-0.5, 1], side: 1, angleDeg: 180, layerScope: 'top', seedPoint: [-0.95, 0] },
+  ]);
+  assert(tlBackTip.finalState.faces.length === 3, `Expected 3 faces (untouched base + flap + folded-back tip), got ${tlBackTip.finalState.faces.length}`);
+  const layersBackTip = tlBackTip.finalState.faces.map(f => f.layer).sort((a, b) => a - b);
+  assert(layersBackTip[0] < layersBackTip[1] && layersBackTip[1] < layersBackTip[2], `Expected 3 distinct stacked layers [-1,0,1], got ${JSON.stringify(layersBackTip)}`);
+
+  // 2. Fold ONLY the tip of the top flap BACK into the pocket (Mountain) -> must tuck BETWEEN base & flap, not behind base!
+  const tlPocketTuck = compilePlanarTimeline({ width: 2, height: 2 }, [
+    { type: 'valley', p1: [0, -1], p2: [0, 1], side: -1, angleDeg: 180 },
+    { type: 'mountain', p1: [-0.5, -1], p2: [-0.5, 1], side: 1, angleDeg: 180, layerScope: 'top', seedPoint: [-0.95, 0] },
+  ]);
+  assert(tlPocketTuck.finalState.faces.length === 3, `Expected 3 faces for pocket tuck, got ${tlPocketTuck.finalState.faces.length}`);
+  const baseFace = tlPocketTuck.finalState.faces.find(f => {
+    const xs = f.pts.map(p => p.x);
+    return Math.min(...xs) < -0.95 && Math.max(...xs) > -0.05;
+  });
+  const minPocketLayer = Math.min(...tlPocketTuck.finalState.faces.map(f => f.layer));
+  assert(baseFace && baseFace.layer === minPocketLayer, `Pocket-tucked tip must land ABOVE untouched base sheet (base layer=${baseFace?.layer}, min=${minPocketLayer})`);
+
+  // 3. UV-connected island isolation on a Blintz fold: folding ONLY top-right flap tip back must NOT slice sibling flaps on the same layer!
+  const tlBlintzOneFlap = compilePlanarTimeline({ width: 2, height: 2 }, [
+    {
+      type: 'multiFold',
+      folds: [
+        { p1: [0, 1], p2: [1, 0], side: 1, foldType: 'valley', angleDeg: 180 },
+        { p1: [-1, 0], p2: [0, 1], side: 1, foldType: 'valley', angleDeg: 180 },
+        { p1: [-1, 0], p2: [0, -1], side: -1, foldType: 'valley', angleDeg: 180 },
+        { p1: [0, -1], p2: [1, 0], side: -1, foldType: 'valley', angleDeg: 180 },
+      ],
+    },
+    { type: 'valley', p1: [0.45, 0], p2: [0, 0.45], side: -1, angleDeg: 180, layerScope: 'top', seedPoint: [0.05, 0.05] },
+  ]);
+  assert(tlBlintzOneFlap.finalState.faces.length === 6, `Expected 6 faces (1 base + 3 untouched sibling flaps + 2 split pieces of grabbed flap), got ${tlBlintzOneFlap.finalState.faces.length}`);
+  console.log('  [OK] Partial opposite-direction 1-flap fold, pocket-tuck ordering & Blintz UV-island isolation verified');
+}
+
 console.log(`\nSUMMARY: ${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

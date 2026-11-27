@@ -534,6 +534,7 @@ export function initOrigamiStudio() {
     state.dragCancelZone = false;
     state.dragShiftFlip = false;
     state.dragAltFree = false;
+    state.dragPickedLayer = null;
     state.lastSnapId = '';
   }
 
@@ -777,6 +778,34 @@ export function initOrigamiStudio() {
     return Math.abs((px - a[0]) * (-dy) + (py - a[1]) * dx) / len;
   }
 
+  function pickFrontMostLayerAt(sx, sy, snap, w, h) {
+    const viewSideZ = lastCam && (lastCam.eye.z - lastCam.target.z) < 0 ? -1 : 1;
+    // When grabbing a snap point (corner/midpoint), use its exact front-most visible layer!
+    if (snap && Number.isFinite(snap.maxLayer) && Number.isFinite(snap.minLayer)) {
+      return viewSideZ >= 0 ? snap.maxLayer : snap.minLayer;
+    }
+    const items = lastCam?.paperItems;
+    if (!items || items.length === 0) return null;
+    // paperItems is sorted back-to-front by layerKey -> pick front-most face containing or touching (sx, sy)
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (it.isSpine) continue;
+      if (sx < it.minX - 6 || sx > it.maxX + 6 || sy < it.minY - 6 || sy > it.maxY + 6) continue;
+      if (pointInPoly2D(sx, sy, it.scrPts)) return it.origFace.layer ?? 0;
+      const pts = it.scrPts;
+      for (let k = 0; k < pts.length; k++) {
+        const a = pts[k], b = pts[(k + 1) % pts.length];
+        const vx = b.x - a.x, vy = b.y - a.y;
+        const lenSq = vx * vx + vy * vy;
+        const t = lenSq > 1e-4 ? Math.max(0, Math.min(1, ((sx - a.x) * vx + (sy - a.y) * vy) / lenSq)) : 0;
+        if (Math.hypot(sx - (a.x + t * vx), sy - (a.y + t * vy)) <= 6) {
+          return it.origFace.layer ?? 0;
+        }
+      }
+    }
+    return null;
+  }
+
   /**
    * Build either a single fold step or a left-right symmetric multiFold step
    * when Mirror Fold mode is active and the two halves do not collide across x = center.x.
@@ -784,6 +813,7 @@ export function initOrigamiStudio() {
   function buildFoldStepWithMirror(spec, paperBounds) {
     const {
       toolType, foldDir = 'valley', p1, p2, side, angleDeg, layerScope, offset,
+      targetLayer = null, seedPoint = null,
       labelEn, labelKo, techniqueEn, techniqueKo,
     } = spec;
 
@@ -796,6 +826,8 @@ export function initOrigamiStudio() {
       angleDeg,
       layerScope,
       offset,
+      ...(Number.isFinite(targetLayer) ? { targetLayer } : {}),
+      ...(seedPoint ? { seedPoint } : {}),
       label: labelEn,
       labelEn,
       labelKo,
@@ -828,6 +860,7 @@ export function initOrigamiStudio() {
       return { step: singleStep, mirrorCrease: null };
     }
 
+    const mSeed = seedPoint ? [2 * mx - seedPoint[0], seedPoint[1]] : null;
     const mirrorStep = {
       type: 'multiFold',
       label: `${labelEn} (${UI_STRINGS.en.mirrorSuffix})`,
@@ -837,8 +870,8 @@ export function initOrigamiStudio() {
       techniqueEn: `${techniqueEn} (${UI_STRINGS.en.mirrorSuffix})`,
       techniqueKo: `${techniqueKo} (${UI_STRINGS.ko.mirrorSuffix})`,
       folds: [
-        { p1, p2, side, foldType: toolType, angleDeg, layerScope },
-        { p1: mp1, p2: mp2, side: mSide, foldType: toolType, angleDeg, layerScope },
+        { p1, p2, side, foldType: toolType, angleDeg, layerScope, ...(Number.isFinite(targetLayer) ? { targetLayer } : {}), ...(seedPoint ? { seedPoint } : {}) },
+        { p1: mp1, p2: mp2, side: mSide, foldType: toolType, angleDeg, layerScope, ...(Number.isFinite(targetLayer) ? { targetLayer } : {}), ...(mSeed ? { seedPoint: mSeed } : {}) },
       ],
     };
 
@@ -857,7 +890,8 @@ export function initOrigamiStudio() {
     const raw = screenToPlane(sx, sy, w, h, lastCam, v3(0, 0, 0), v3(0, 0, 1));
     const rawPt = raw ? v3(raw.x, raw.y, 0) : state.dragStart;
 
-    // 1. Check Direct Drag-to-Unfold: pulling a folded corner/edge back past its hinge toward its original unfolded position!
+    // 1. Check Direct Drag-to-Unfold: ONLY triggers when pulled all the way onto the teal
+    //    "Unfold" ghost ring so dragging a folded tip partway back performs a real partial fold!
     const unfoldPair = findUnfoldPairForPoint(state.dragStart);
     state.dragUnfoldGhost = unfoldPair ? unfoldPair.unfolded : null;
 
@@ -869,12 +903,11 @@ export function initOrigamiStudio() {
         const dxU = rawPt.x - state.dragStart.x;
         const dyU = rawPt.y - state.dragStart.y;
         const proj = (dxU * ux + dyU * uy) / uLen;
-        const perp = Math.abs(dxU * (-uy) + dyU * ux) / uLen;
+        const distToOrigin = Math.hypot(rawPt.x - unfoldPair.unfolded.x, rawPt.y - unfoldPair.unfolded.y);
+        const unfoldSnapDist = Math.max(0.24, Math.min(0.36, uLen * 0.28));
 
-        // Crossing past the hinge line (proj > 0.52 * uLen) into the unfolded side triggers live 3D Unfold!
-        if (proj > uLen * 0.52 && perp < Math.max(0.48, proj * 0.65)) {
-          const distToOrigin = Math.hypot(rawPt.x - unfoldPair.unfolded.x, rawPt.y - unfoldPair.unfolded.y);
-          const snapped = distToOrigin < 0.42 || proj >= uLen * 0.88;
+        if (distToOrigin < unfoldSnapDist && proj > uLen * 0.78) {
+          const snapped = distToOrigin < unfoldSnapDist * 0.85 || proj >= uLen * 0.90;
           if (snapped && state.lastSnapId !== 'unfold-origin') {
             state.lastSnapId = 'unfold-origin';
             triggerHaptic(10);
@@ -902,7 +935,7 @@ export function initOrigamiStudio() {
             descKo: UI_STRINGS.ko.freeStepUnfoldLastDesc,
           };
           state.dragLiveCompiled = { evaluate: state.compiledPlanar.topUnfoldHint.evaluateUnfold };
-          state.dragLiveT = snapped ? 0.94 : Math.max(0.22, Math.min(0.92, proj / uLen));
+          state.dragLiveT = snapped ? 0.94 : Math.max(0.65, Math.min(0.92, proj / uLen));
           return;
         }
       }
@@ -979,6 +1012,8 @@ export function initOrigamiStudio() {
       side,
       angleDeg: state.freeAngle,
       layerScope: worldScope,
+      targetLayer: state.freeLayerScope === 'top' ? state.dragPickedLayer : null,
+      seedPoint: state.freeLayerScope !== 'all' ? [state.dragStart.x, state.dragStart.y] : null,
       offset: state.freePleatOffset,
       labelEn: `${toolNamesEn[uiTool]}${sufEn}`,
       labelKo: `${toolNamesKo[uiTool]}${sufKo}`,
@@ -1073,6 +1108,7 @@ export function initOrigamiStudio() {
         state.dragFoldActive = true;
         state.dragShiftFlip = !!e.shiftKey;
         state.dragAltFree = !!e.altKey;
+        state.dragPickedLayer = pickFrontMostLayerAt(x, y, snap, w, h);
         state.dragCancelZone = false;
         state.lastSnapId = '';
         state.dragStart = startPt;
@@ -1359,6 +1395,7 @@ export function initOrigamiStudio() {
     } else if (state.mode === 'free') {
       if (key === 'v') { setFoldDir('valley'); }
       else if (key === 'm') { setFoldDir('mountain'); }
+      else if (key === 't') { toggleSingleFlapScope(); }
       else if (key === 'x') { toggleMirrorFold(); }
       else if (key === 'u') { unfoldLastFreeStep(); }
       else if (key === 'f') { applyQuickMacro('flip'); }
@@ -1516,6 +1553,8 @@ export function initOrigamiStudio() {
         }
       } else if (state.freeMirror) {
         textEl.textContent = t('bannerDragMirrorHint');
+      } else if (state.freeLayerScope !== 'all') {
+        textEl.textContent = t('bannerSingleLayerHint');
       } else if (canUnfold) {
         textEl.textContent = isMobileViewport()
           ? t('bannerDragUnfoldMobile')
@@ -1607,6 +1646,15 @@ export function initOrigamiStudio() {
       if (ico) ico.textContent = isMountain ? '▼' : '▲';
       const lbl = $('qbtn-dir-lbl');
       if (lbl) lbl.textContent = isMountain ? t('quickMountain') : t('quickValley');
+    }
+    const qLayer = $('qbtn-layer');
+    if (qLayer) {
+      const sc = state.freeLayerScope;
+      qLayer.classList.toggle('active-layer', sc !== 'all');
+      const ico = qLayer.querySelector('.q-ico');
+      if (ico) ico.textContent = sc === 'all' ? '▤' : sc === 'top' ? '◰' : '◳';
+      const lbl = $('qbtn-layer-lbl');
+      if (lbl) lbl.textContent = sc === 'all' ? t('quickLayerAll') : sc === 'top' ? t('quickLayerOne') : t('quickLayerBack');
     }
     if ($('qbtn-mirror')) {
       $('qbtn-mirror').classList.toggle('active-mirror', state.freeMirror);
@@ -2116,11 +2164,19 @@ export function initOrigamiStudio() {
     });
   });
   $('free-pleat-offset').addEventListener('input', (e) => { state.freePleatOffset = Number(e.target.value); $('free-pleat-val').textContent = `${Math.round(state.freePleatOffset * 100)}%`; });
-  function setLayerScope(scope) {
+  function setLayerScope(scope, withToast = false) {
     state.freeLayerScope = scope;
     $('layer-all').classList.toggle('active', scope === 'all');
     $('layer-top').classList.toggle('active', scope === 'top');
     if ($('layer-bottom')) $('layer-bottom').classList.toggle('active', scope === 'bottom');
+    syncQuickRail();
+    updateFreeBanner();
+    if (withToast) {
+      showToast(scope === 'all' ? t('toastLayerAll') : t('toastLayerOne'), 2000);
+    }
+  }
+  function toggleSingleFlapScope() {
+    setLayerScope(state.freeLayerScope === 'all' ? 'top' : 'all', true);
   }
   $('layer-all').addEventListener('click', () => setLayerScope('all'));
   $('layer-top').addEventListener('click', () => setLayerScope('top'));
@@ -2136,6 +2192,7 @@ export function initOrigamiStudio() {
       setFoldDir(state.freeFoldDir === 'mountain' ? 'valley' : 'mountain');
     });
   }
+  if ($('qbtn-layer')) $('qbtn-layer').addEventListener('click', toggleSingleFlapScope);
   if ($('qbtn-mirror')) $('qbtn-mirror').addEventListener('click', toggleMirrorFold);
   if ($('qbtn-flip')) $('qbtn-flip').addEventListener('click', () => applyQuickMacro('flip'));
   if ($('qbtn-rot')) $('qbtn-rot').addEventListener('click', () => applyQuickMacro('rot45'));

@@ -70,10 +70,49 @@ function compactLayers(faces) {
   }
 }
 
+function pointDistToPolyXY(px, py, pts) {
+  let inside = false;
+  let minSq = Infinity;
+  const n = pts.length;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const xi = pts[i].x, yi = pts[i].y, xj = pts[j].x, yj = pts[j].y;
+    if (((yi > py) !== (yj > py)) && (px < ((xj - xi) * (py - yi)) / (yj - yi + 1e-12) + xi)) {
+      inside = !inside;
+    }
+    const vx = xi - xj, vy = yi - yj;
+    const lenSq = vx * vx + vy * vy;
+    const t = lenSq > 1e-8 ? Math.max(0, Math.min(1, ((px - xj) * vx + (py - yj) * vy) / lenSq)) : 0;
+    const dx = px - (xj + t * vx), dy = py - (yj + t * vy);
+    const dSq = dx * dx + dy * dy;
+    if (dSq < minSq) minSq = dSq;
+  }
+  return inside ? 0 : Math.sqrt(minSq);
+}
+
+function facesShareUVEdge(fA, fB) {
+  if (!fA.uvs || !fB.uvs) return false;
+  const eps = 3.5e-3;
+  const uvEq = (a, b) => Math.hypot(a.u - b.u, a.v - b.v) < eps;
+  const nA = fA.uvs.length, nB = fB.uvs.length;
+  for (let i = 0; i < nA; i++) {
+    const a1 = fA.uvs[i], a2 = fA.uvs[(i + 1) % nA];
+    if (Math.hypot(a2.u - a1.u, a2.v - a1.v) < 4e-3) continue;
+    for (let j = 0; j < nB; j++) {
+      const b1 = fB.uvs[j], b2 = fB.uvs[(j + 1) % nB];
+      if ((uvEq(a1, b2) && uvEq(a2, b1)) || (uvEq(a1, b1) && uvEq(a2, b2))) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 /**
- * Determine which faces are eligible to move given layerScope ('all'|'top'|'bottom').
+ * Determine which faces are eligible to move given layerScope ('all'|'top'|'bottom'),
+ * optional explicit targetLayerOverride (picked flap layer), and optional seedPoint
+ * (isolates ONLY the UV-connected continuous flap containing the grabbed point).
  */
-function filterLayerEligible(faces, movingSide, planeOrigin, planeNormal, layerScope) {
+function filterLayerEligible(faces, movingSide, planeOrigin, planeNormal, layerScope, targetLayerOverride = null, seedPoint = null) {
   if (!layerScope || layerScope === 'all') {
     return new Set(faces.map((_, i) => i));
   }
@@ -93,12 +132,18 @@ function filterLayerEligible(faces, movingSide, planeOrigin, planeNormal, layerS
   }
   if (candidateIdx.length === 0) return new Set();
 
-  let targetLayer = faces[candidateIdx[0]].layer;
-  for (const idx of candidateIdx) {
-    if (layerScope === 'top') {
-      if (faces[idx].layer > targetLayer) targetLayer = faces[idx].layer;
-    } else if (layerScope === 'bottom') {
-      if (faces[idx].layer < targetLayer) targetLayer = faces[idx].layer;
+  let targetLayer;
+  if (Number.isFinite(targetLayerOverride) &&
+      candidateIdx.some(idx => Math.abs(faces[idx].layer - targetLayerOverride) < 0.55)) {
+    targetLayer = targetLayerOverride;
+  } else {
+    targetLayer = faces[candidateIdx[0]].layer;
+    for (const idx of candidateIdx) {
+      if (layerScope === 'top') {
+        if (faces[idx].layer > targetLayer) targetLayer = faces[idx].layer;
+      } else if (layerScope === 'bottom') {
+        if (faces[idx].layer < targetLayer) targetLayer = faces[idx].layer;
+      }
     }
   }
 
@@ -108,6 +153,73 @@ function filterLayerEligible(faces, movingSide, planeOrigin, planeNormal, layerS
       eligible.add(idx);
     }
   }
+
+  // If a grab seedPoint is provided, isolate ONLY the UV-connected flap island on targetLayer
+  // containing that seedPoint (so sibling flaps on the same height never get accidentally sliced!)
+  if (seedPoint && eligible.size > 1) {
+    const sx = seedPoint[0], sy = seedPoint[1];
+    const layerIndices = [];
+    for (let i = 0; i < faces.length; i++) {
+      if (Math.abs(faces[i].layer - targetLayer) < 0.55) layerIndices.push(i);
+    }
+    const straddlesCrease = (idx) => {
+      let hasStay = false;
+      for (const p of faces[idx].pts) {
+        if (dot(sub(p, planeOrigin), planeNormal) * movingSide < -0.02) {
+          hasStay = true;
+          break;
+        }
+      }
+      return hasStay;
+    };
+    const eligibleArr = Array.from(eligible);
+    const straddling = eligibleArr.filter(straddlesCrease);
+    const pool = straddling.length > 0 ? straddling : eligibleArr;
+
+    let bestDist = Infinity;
+    const scored = pool.map(idx => {
+      const d = pointDistToPolyXY(sx, sy, faces[idx].pts);
+      if (d < bestDist) bestDist = d;
+      return { idx, d };
+    });
+    let seeds = bestDist < 0.35
+      ? scored.filter(s => s.d <= bestDist + 2e-3).map(s => s.idx)
+      : [];
+    // If multiple distinct flaps meet at the exact grabbed vertex (e.g. Blintz center (0,0)),
+    // pick the flap whose body lies in the fold's drag/stay direction (-planeNormal * movingSide)!
+    if (seeds.length > 1) {
+      const stayDirX = -planeNormal.x * movingSide;
+      const stayDirY = -planeNormal.y * movingSide;
+      let bestAlign = -Infinity;
+      let bestSeed = seeds[0];
+      for (const idx of seeds) {
+        const c = polyCentroid(faces[idx].pts);
+        const align = (c.x - sx) * stayDirX + (c.y - sy) * stayDirY;
+        if (align > bestAlign) { bestAlign = align; bestSeed = idx; }
+      }
+      seeds = [bestSeed];
+    }
+    if (seeds.length > 0) {
+      const visited = new Set(seeds);
+      const queue = [...seeds];
+      while (queue.length > 0) {
+        const cur = queue.shift();
+        for (const nxt of layerIndices) {
+          if (visited.has(nxt)) continue;
+          if (facesShareUVEdge(faces[cur], faces[nxt])) {
+            visited.add(nxt);
+            queue.push(nxt);
+          }
+        }
+      }
+      const isolated = new Set();
+      for (const idx of eligible) {
+        if (visited.has(idx)) isolated.add(idx);
+      }
+      if (isolated.size > 0) return isolated;
+    }
+  }
+
   return eligible;
 }
 
@@ -277,7 +389,7 @@ export function compilePlanarStep(baseState, step) {
       const targetAngle = sf.rawAngleDeg !== undefined
         ? (sf.rawAngleDeg * Math.PI) / 180
         : ((fType === 'mountain' ? -1 : 1) * side) * (angleDeg * Math.PI) / 180;
-      const eligible = filterLayerEligible(workFaces, side, p1, planeNormal, sf.layerScope || 'all');
+      const eligible = filterLayerEligible(workFaces, side, p1, planeNormal, sf.layerScope || 'all', sf.targetLayer ?? null, sf.seedPoint ?? null);
 
       guides.push({ p1, p2, type: fType });
       foldInfos.push({ origin: p1, axis, targetAngle, fType, angleDeg });
@@ -384,7 +496,7 @@ export function compilePlanarStep(baseState, step) {
     const targetAng1 = firstSign * (angleDeg * Math.PI) / 180;
     const targetAng2 = -targetAng1; // second crease is opposite
 
-    const eligible = filterLayerEligible(baseState.faces, side, p1, planeNormal, step.layerScope || 'all');
+    const eligible = filterLayerEligible(baseState.faces, side, p1, planeNormal, step.layerScope || 'all', step.targetLayer ?? null, step.seedPoint ?? null);
     const pieces = []; // group: 0 = stationary, 1 = middle strip, 2 = far region
     const addedCreases = [];
 
@@ -488,7 +600,8 @@ export function compilePlanarStep(baseState, step) {
   const sign = (foldType === 'mountain' ? -1 : 1) * side;
   const targetAngle = sign * (angleDeg * Math.PI) / 180;
 
-  const eligible = filterLayerEligible(baseState.faces, side, p1, planeNormal, step.layerScope || 'all');
+  const layerScope = step.layerScope || 'all';
+  const eligible = filterLayerEligible(baseState.faces, side, p1, planeNormal, layerScope, step.targetLayer ?? null, step.seedPoint ?? null);
 
   const stayFaces = [];
   const moveFaces = [];
@@ -519,6 +632,18 @@ export function compilePlanarStep(baseState, step) {
   const moveMax = moveFaces.length ? Math.max(...moveFaces.map(f => f.layer)) : 0;
   const moveMin = moveFaces.length ? Math.min(...moveFaces.map(f => f.layer)) : 0;
 
+  // For single-layer folds ('top'|'bottom'), detect any untouched stationary sheet directly
+  // behind/above the moving flap so tucking a flap backward lands inside the pocket between
+  // the flap and the base sheet instead of phasing through solid paper!
+  let belowMax = -Infinity;
+  let aboveMin = Infinity;
+  if (layerScope !== 'all' && moveFaces.length > 0) {
+    for (const sf of stayFaces) {
+      if (sf.layer < moveMin - 0.05 && sf.layer > belowMax) belowMax = sf.layer;
+      if (sf.layer > moveMax + 0.05 && sf.layer < aboveMin) aboveMin = sf.layer;
+    }
+  }
+
   const guides = [{ p1, p2, type: step.creaseType || foldType }];
 
   const evaluate = (t) => {
@@ -542,9 +667,23 @@ export function compilePlanarStep(baseState, step) {
     for (const f of moveFaces) {
       let layer = f.layer;
       if (!isPrecrease && foldProgress > 0.51 && angleDeg >= 165) {
-        layer = foldType === 'valley'
-          ? maxAll + 1 + (moveMax - f.layer)
-          : minAll - 1 - (f.layer - moveMin);
+        if (foldType === 'valley') {
+          if (layerScope !== 'all' && Number.isFinite(aboveMin)) {
+            const span = Math.max(1, moveMax - moveMin + 1);
+            const frac = (moveMax - f.layer + 1) / (span + 1);
+            layer = moveMax + (aboveMin - moveMax) * frac;
+          } else {
+            layer = maxAll + 1 + (moveMax - f.layer);
+          }
+        } else {
+          if (layerScope !== 'all' && Number.isFinite(belowMax)) {
+            const span = Math.max(1, moveMax - moveMin + 1);
+            const frac = (f.layer - moveMin + 1) / (span + 1);
+            layer = moveMin - (moveMin - belowMax) * frac;
+          } else {
+            layer = minAll - 1 - (f.layer - moveMin);
+          }
+        }
       }
       const hOrigin = f.hingeOrigin || p1;
       const hAxis = f.hingeAxis || axis;
