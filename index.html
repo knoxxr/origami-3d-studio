@@ -128,6 +128,52 @@
             </div>
           </div>
 
+          <div class="paper-size-section">
+            <div class="section-label">
+              <span data-i18n="secPaperSize">Paper Size &amp; Ratio</span>
+              <button id="btn-paper-orient" class="paper-orient-btn" data-i18n-title="paperOrientTitle" title="Swap Portrait ↔ Landscape">⇄ <span id="paper-ratio-badge">1:1</span></button>
+            </div>
+            <div class="paper-size-grid">
+              <button class="paper-size-btn active" data-paper-size="square">
+                <span class="ps-icon ps-square" aria-hidden="true"></span>
+                <span class="ps-name" data-i18n="psSquare">Square</span>
+                <span class="ps-ratio">1:1</span>
+              </button>
+              <button class="paper-size-btn" data-paper-size="a4">
+                <span class="ps-icon ps-a4" aria-hidden="true"></span>
+                <span class="ps-name" data-i18n="psA4">A4</span>
+                <span class="ps-ratio">1:√2</span>
+              </button>
+              <button class="paper-size-btn" data-paper-size="letter">
+                <span class="ps-icon ps-letter" aria-hidden="true"></span>
+                <span class="ps-name" data-i18n="psLetter">Letter</span>
+                <span class="ps-ratio">8.5:11</span>
+              </button>
+              <button class="paper-size-btn" data-paper-size="rect21">
+                <span class="ps-icon ps-rect21" aria-hidden="true"></span>
+                <span class="ps-name" data-i18n="psRect21">Long</span>
+                <span class="ps-ratio">1:2</span>
+              </button>
+              <button class="paper-size-btn" data-paper-size="bill">
+                <span class="ps-icon ps-bill" aria-hidden="true"></span>
+                <span class="ps-name" data-i18n="psBill">Bill</span>
+                <span class="ps-ratio">2.35:1</span>
+              </button>
+              <button class="paper-size-btn" data-paper-size="diamond">
+                <span class="ps-icon ps-diamond" aria-hidden="true"></span>
+                <span class="ps-name" data-i18n="psDiamond">Diamond</span>
+                <span class="ps-ratio">45°</span>
+              </button>
+            </div>
+            <div class="paper-custom-row">
+              <span class="paper-custom-lbl" data-i18n="psCustom">Custom</span>
+              <input id="paper-custom-w" type="number" min="1" max="100" step="0.5" value="15" aria-label="Paper width" />
+              <span class="paper-custom-x">×</span>
+              <input id="paper-custom-h" type="number" min="1" max="100" step="0.5" value="15" aria-label="Paper height" />
+              <button id="btn-paper-custom-apply" class="paper-custom-apply" data-i18n="psApply">Apply</button>
+            </div>
+          </div>
+
           <div>
             <div class="section-label"><span data-i18n="secFoldSide">Fold Direction (Front / Back)</span></div>
             <div class="fold-side-seg">

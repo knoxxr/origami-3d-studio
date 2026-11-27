@@ -47,7 +47,7 @@ export function initOrigamiStudio() {
 
     // Free Fold Studio state
     freeTitle: UI_STRINGS[initLang].defaultFreeTitle,
-    freePaper: { width: 2.0, height: 2.0, rotationDeg: 0 },
+    freePaper: { presetId: 'square', width: 2.0, height: 2.0, rotationDeg: 0, cmW: 15, cmH: 15 },
     freeSteps: [],
     freeRedo: [],
     freeTool: 'valley', // 'valley' | 'mountain' | 'precrease' | 'pleat'
@@ -603,10 +603,94 @@ export function initOrigamiStudio() {
     addFreeStep(state.freeRedo.pop());
   }
 
+  const PAPER_SIZE_PRESETS = {
+    square:  { id: 'square',  cmW: 15,   cmH: 15,   rotationDeg: 0,  nameKey: 'psSquare' },
+    a4:      { id: 'a4',      cmW: 21,   cmH: 29.7, rotationDeg: 0,  nameKey: 'psA4' },
+    letter:  { id: 'letter',  cmW: 21.6, cmH: 27.9, rotationDeg: 0,  nameKey: 'psLetter' },
+    rect21:  { id: 'rect21',  cmW: 10,   cmH: 20,   rotationDeg: 0,  nameKey: 'psRect21' },
+    bill:    { id: 'bill',    cmW: 15.6, cmH: 6.6,  rotationDeg: 0,  nameKey: 'psBill' },
+    diamond: { id: 'diamond', cmW: 15,   cmH: 15,   rotationDeg: 45, nameKey: 'psDiamond' },
+  };
+
+  function makePaperSpec(cmW, cmH, rotationDeg = 0, presetId = 'custom') {
+    const rw = Math.max(1, Math.min(100, Number(cmW) || 15));
+    const rh = Math.max(1, Math.min(100, Number(cmH) || 15));
+    let effW = rw, effH = rh;
+    if (effW / effH > 4.0) effW = effH * 4.0;
+    else if (effH / effW > 4.0) effH = effW * 4.0;
+    const s = Math.sqrt(4.0 / (effW * effH));
+    let width = effW * s;
+    let height = effH * s;
+    const maxDim = Math.max(width, height);
+    if (maxDim > 2.68) {
+      const shrink = 2.68 / maxDim;
+      width *= shrink;
+      height *= shrink;
+    }
+    return {
+      presetId,
+      width: Number(width.toFixed(4)),
+      height: Number(height.toFixed(4)),
+      rotationDeg,
+      cmW: Number(rw.toFixed(1)),
+      cmH: Number(rh.toFixed(1)),
+    };
+  }
+
+  function formatRatioLabel(paper) {
+    const w = paper?.width || 2;
+    const h = paper?.height || 2;
+    if (Math.abs(w - h) < 1e-3) return paper?.rotationDeg === 45 ? '1:1 ◇' : '1:1';
+    const fmt = (v) => v.toFixed(2).replace(/\.?0+$/, '');
+    return w > h ? `${fmt(w / h)}:1` : `1:${fmt(h / w)}`;
+  }
+
+  function setFreePaperSize(paperSpec, toastLabel = '') {
+    state.freePaper = { ...paperSpec };
+    state.freeSteps = [];
+    state.freeRedo = [];
+    state.userZoomScale = 1.0;
+    state.restoredStepCount = 0;
+    clearInteractiveDraft();
+    rebuildCompiledTimeline();
+    state.playing = false;
+    state.playPos = 0;
+    clearFreeDraft();
+    const bounds = getCurrentPaperBounds();
+    state.targetCamera = {
+      yaw: state.camera.yaw,
+      pitch: state.camera.pitch,
+      distance: idealDistanceForRadius(bounds.radius),
+      target: bounds.center,
+    };
+    syncUI();
+    if (toastLabel) showToast(t('toastPaperSize', toastLabel), 2000);
+    if (isMobileViewport()) closeSheet();
+  }
+
+  function applyPaperSizePreset(presetId) {
+    const preset = PAPER_SIZE_PRESETS[presetId];
+    if (!preset) return;
+    const spec = makePaperSpec(preset.cmW, preset.cmH, preset.rotationDeg, preset.id);
+    setFreePaperSize(spec, `${t(preset.nameKey)} (${formatRatioLabel(spec)})`);
+  }
+
+  function swapPaperOrientation() {
+    const cur = state.freePaper;
+    if (Math.abs(cur.width - cur.height) < 1e-3) {
+      const nextRot = cur.rotationDeg === 45 ? 0 : 45;
+      const nextPreset = nextRot === 45 ? 'diamond' : 'square';
+      const spec = makePaperSpec(cur.cmW || 15, cur.cmH || 15, nextRot, nextPreset);
+      setFreePaperSize(spec, `${t(PAPER_SIZE_PRESETS[nextPreset].nameKey)} (${formatRatioLabel(spec)})`);
+      return;
+    }
+    const spec = makePaperSpec(cur.cmH || cur.height * 7.5, cur.cmW || cur.width * 7.5, cur.rotationDeg || 0, cur.presetId || 'custom');
+    setFreePaperSize(spec, formatRatioLabel(spec));
+  }
+
   function resetFreeStudio() {
     state.freeSteps = [];
     state.freeRedo = [];
-    state.freePaper = { width: 2, height: 2, rotationDeg: 0 };
     state.userZoomScale = 1.0;
     state.restoredStepCount = 0;
     clearInteractiveDraft();
@@ -657,6 +741,9 @@ export function initOrigamiStudio() {
     const dir = resolveWorldFoldDir(uiDir);
     const isBack = uiDir === 'mountain';
     const ang = state.freeAngle;
+    const hw = (state.freePaper?.width || 2) * 0.5;
+    const hh = (state.freePaper?.height || 2) * 0.5;
+    const m = Math.min(hw, hh);
     const dirWordEn = isBack ? 'Mountain' : 'Valley';
     const dirWordKo = isBack ? '뒷면(산)' : '앞면(계곡)';
     const dirTagEn = isBack ? ` (${UI_STRINGS.en.backDirSuffix})` : '';
@@ -664,39 +751,39 @@ export function initOrigamiStudio() {
     const techEn = isBack ? 'Mountain Fold' : 'Valley Fold';
     const techKo = isBack ? '뒷면(산) 접기' : '앞면(계곡) 접기';
     const macros = {
-      diag: { type: dir, p1: [-xSign, -1], p2: [xSign, 1], side: -xSign, angleDeg: ang, layerScope: scope, label: `Diagonal ${dirWordEn} Fold`, labelEn: `Diagonal ${dirWordEn} Fold`, labelKo: `대각선 ${dirWordKo} 접기`, techniqueEn: techEn, techniqueKo: techKo },
-      halfV: { type: dir, p1: [0, -1], p2: [0, 1], side: -xSign, angleDeg: ang, layerScope: scope, label: `Vertical Half Fold${dirTagEn}`, labelEn: `Vertical Half Fold${dirTagEn}`, labelKo: `세로 반 접기${dirTagKo}`, techniqueEn: techEn, techniqueKo: techKo },
-      halfH: { type: dir, p1: [-1, 0], p2: [1, 0], side: 1, angleDeg: ang, layerScope: scope, label: `Horizontal Half Fold${dirTagEn}`, labelEn: `Horizontal Half Fold${dirTagEn}`, labelKo: `가로 반 접기${dirTagKo}`, techniqueEn: techEn, techniqueKo: techKo },
+      diag: { type: dir, p1: [-xSign * hw, -hh], p2: [xSign * hw, hh], side: -xSign, angleDeg: ang, layerScope: scope, label: `Diagonal ${dirWordEn} Fold`, labelEn: `Diagonal ${dirWordEn} Fold`, labelKo: `대각선 ${dirWordKo} 접기`, techniqueEn: techEn, techniqueKo: techKo },
+      halfV: { type: dir, p1: [0, -hh], p2: [0, hh], side: -xSign, angleDeg: ang, layerScope: scope, label: `Vertical Half Fold${dirTagEn}`, labelEn: `Vertical Half Fold${dirTagEn}`, labelKo: `세로 반 접기${dirTagKo}`, techniqueEn: techEn, techniqueKo: techKo },
+      halfH: { type: dir, p1: [-hw, 0], p2: [hw, 0], side: 1, angleDeg: ang, layerScope: scope, label: `Horizontal Half Fold${dirTagEn}`, labelEn: `Horizontal Half Fold${dirTagEn}`, labelKo: `가로 반 접기${dirTagKo}`, techniqueEn: techEn, techniqueKo: techKo },
       kite: {
         type: 'multiFold', label: `Kite Fold${dirTagEn}`, labelEn: `Kite Fold${dirTagEn}`, labelKo: `아이스크림 접기${dirTagKo}`, techniqueEn: 'Kite Fold', techniqueKo: '아이스크림 접기',
         folds: [
-          { p1: [0, 1], p2: [1, 0], side: 1, foldType: dir, angleDeg: ang, layerScope: scope },
-          { p1: [-1, 0], p2: [0, 1], side: 1, foldType: dir, angleDeg: ang, layerScope: scope },
+          { p1: [hw - m, hh], p2: [hw, hh - m], side: 1, foldType: dir, angleDeg: ang, layerScope: scope },
+          { p1: [-hw, hh - m], p2: [-hw + m, hh], side: 1, foldType: dir, angleDeg: ang, layerScope: scope },
         ],
       },
       blintz: {
         type: 'multiFold', label: `Blintz Fold${dirTagEn}`, labelEn: `Blintz Fold (4 Corners)${dirTagEn}`, labelKo: `방석 접기 (4모서리)${dirTagKo}`, techniqueEn: 'Blintz Fold', techniqueKo: '방석 접기',
         folds: [
-          { p1: [0, 1], p2: [1, 0], side: 1, foldType: dir, angleDeg: ang, layerScope: scope },
-          { p1: [-1, 0], p2: [0, 1], side: 1, foldType: dir, angleDeg: ang, layerScope: scope },
-          { p1: [-1, 0], p2: [0, -1], side: -1, foldType: dir, angleDeg: ang, layerScope: scope },
-          { p1: [0, -1], p2: [1, 0], side: -1, foldType: dir, angleDeg: ang, layerScope: scope },
+          { p1: [hw - m, hh], p2: [hw, hh - m], side: 1, foldType: dir, angleDeg: ang, layerScope: scope },
+          { p1: [-hw, hh - m], p2: [-hw + m, hh], side: 1, foldType: dir, angleDeg: ang, layerScope: scope },
+          { p1: [-hw, -hh + m], p2: [-hw + m, -hh], side: -1, foldType: dir, angleDeg: ang, layerScope: scope },
+          { p1: [hw - m, -hh], p2: [hw, -hh + m], side: -1, foldType: dir, angleDeg: ang, layerScope: scope },
         ],
       },
-      pleat: { type: 'pleat', foldDir: dir, p1: [-0.25 * xSign, -1], p2: [-0.25 * xSign, 1], side: -xSign, offset: state.freePleatOffset, angleDeg: ang, layerScope: scope, label: `Pleat Fold${dirTagEn}`, labelEn: `Pleat Fold${dirTagEn}`, labelKo: `계단 접기${dirTagKo}`, techniqueEn: 'Pleat Fold', techniqueKo: '계단 접기' },
+      pleat: { type: 'pleat', foldDir: dir, p1: [-0.25 * hw * xSign, -hh], p2: [-0.25 * hw * xSign, hh], side: -xSign, offset: state.freePleatOffset * hw, angleDeg: ang, layerScope: scope, label: `Pleat Fold${dirTagEn}`, labelEn: `Pleat Fold${dirTagEn}`, labelKo: `계단 접기${dirTagKo}`, techniqueEn: 'Pleat Fold', techniqueKo: '계단 접기' },
       flip: { type: 'flip', axis: 'y', label: 'Flip Paper', labelEn: 'Flip Paper', labelKo: '종이 뒤집기', techniqueEn: 'Flip', techniqueKo: '뒤집기' },
       rot90: { type: 'rotate', angleDeg: 90 * xSign, label: 'Rotate 90°', labelEn: 'Rotate 90°', labelKo: '90° 회전', techniqueEn: 'Rotate', techniqueKo: '회전' },
       rot45: { type: 'rotate', angleDeg: 45 * xSign, label: 'Rotate 45°', labelEn: 'Rotate 45°', labelKo: '45° 회전', techniqueEn: 'Rotate', techniqueKo: '회전' },
     };
     if (isMobileViewport()) closeSheet();
     if (macroId === 'accordion') {
-      addFreeStep({ type: 'pleat', foldDir: dir, p1: [-0.45 * xSign, -1], p2: [-0.45 * xSign, 1], side: -xSign, offset: 0.25, angleDeg: ang, layerScope: scope, label: `Accordion Pleat 1${dirTagEn}`, labelEn: `Accordion Pleat 1${dirTagEn}`, labelKo: `아코디언 1단 주름${dirTagKo}`, techniqueEn: 'Pleat Fold', techniqueKo: '계단 접기' });
-      addFreeStep({ type: 'pleat', foldDir: dir, p1: [0.15 * xSign, -1], p2: [0.15 * xSign, 1], side: -xSign, offset: 0.25, angleDeg: ang, layerScope: scope, label: `Accordion Pleat 2${dirTagEn}`, labelEn: `Accordion Pleat 2${dirTagEn}`, labelKo: `아코디언 2단 주름${dirTagKo}`, techniqueEn: 'Pleat Fold', techniqueKo: '계단 접기' });
+      addFreeStep({ type: 'pleat', foldDir: dir, p1: [-0.45 * hw * xSign, -hh], p2: [-0.45 * hw * xSign, hh], side: -xSign, offset: 0.25 * hw, angleDeg: ang, layerScope: scope, label: `Accordion Pleat 1${dirTagEn}`, labelEn: `Accordion Pleat 1${dirTagEn}`, labelKo: `아코디언 1단 주름${dirTagKo}`, techniqueEn: 'Pleat Fold', techniqueKo: '계단 접기' });
+      addFreeStep({ type: 'pleat', foldDir: dir, p1: [0.15 * hw * xSign, -hh], p2: [0.15 * hw * xSign, hh], side: -xSign, offset: 0.25 * hw, angleDeg: ang, layerScope: scope, label: `Accordion Pleat 2${dirTagEn}`, labelEn: `Accordion Pleat 2${dirTagEn}`, labelKo: `아코디언 2단 주름${dirTagKo}`, techniqueEn: 'Pleat Fold', techniqueKo: '계단 접기' });
       return;
     }
     if (macroId === 'grid') {
-      addFreeStep({ type: 'precrease', foldDir: dir, creaseType: dir, p1: [0, -1], p2: [0, 1], side: -xSign, label: `Vertical Center Pre-crease${dirTagEn}`, labelEn: `Vertical Center Pre-crease${dirTagEn}`, labelKo: `세로 중심 예비선${dirTagKo}`, techniqueEn: 'Pre-crease', techniqueKo: '접었다 펴기' });
-      addFreeStep({ type: 'precrease', foldDir: dir, creaseType: dir, p1: [-1, 0], p2: [1, 0], side: 1, label: `Horizontal Center Pre-crease${dirTagEn}`, labelEn: `Horizontal Center Pre-crease${dirTagEn}`, labelKo: `가로 중심 예비선${dirTagKo}`, techniqueEn: 'Pre-crease', techniqueKo: '접었다 펴기' });
+      addFreeStep({ type: 'precrease', foldDir: dir, creaseType: dir, p1: [0, -hh], p2: [0, hh], side: -xSign, label: `Vertical Center Pre-crease${dirTagEn}`, labelEn: `Vertical Center Pre-crease${dirTagEn}`, labelKo: `세로 중심 예비선${dirTagKo}`, techniqueEn: 'Pre-crease', techniqueKo: '접었다 펴기' });
+      addFreeStep({ type: 'precrease', foldDir: dir, creaseType: dir, p1: [-hw, 0], p2: [hw, 0], side: 1, label: `Horizontal Center Pre-crease${dirTagEn}`, labelEn: `Horizontal Center Pre-crease${dirTagEn}`, labelKo: `가로 중심 예비선${dirTagKo}`, techniqueEn: 'Pre-crease', techniqueKo: '접었다 펴기' });
       return;
     }
     const step = macros[macroId];
@@ -1714,6 +1801,19 @@ export function initOrigamiStudio() {
       document.querySelectorAll('[data-interact]').forEach(b => {
         b.classList.toggle('active', b.dataset.interact === state.freeInteractMode);
       });
+      const activePreset = state.freePaper?.presetId || 'square';
+      document.querySelectorAll('[data-paper-size]').forEach(b => {
+        b.classList.toggle('active', b.dataset.paperSize === activePreset);
+      });
+      if ($('paper-ratio-badge')) {
+        $('paper-ratio-badge').textContent = formatRatioLabel(state.freePaper);
+      }
+      if ($('paper-custom-w') && document.activeElement !== $('paper-custom-w')) {
+        $('paper-custom-w').value = String(state.freePaper?.cmW ?? Number((state.freePaper.width * 7.5).toFixed(1)));
+      }
+      if ($('paper-custom-h') && document.activeElement !== $('paper-custom-h')) {
+        $('paper-custom-h').value = String(state.freePaper?.cmH ?? Number((state.freePaper.height * 7.5).toFixed(1)));
+      }
       $('layer-all').classList.toggle('active', state.freeLayerScope === 'all');
       $('layer-top').classList.toggle('active', state.freeLayerScope === 'top');
       if ($('layer-bottom')) $('layer-bottom').classList.toggle('active', state.freeLayerScope === 'bottom');
@@ -1816,7 +1916,9 @@ export function initOrigamiStudio() {
     });
 
     if (state.showCP && !isMobileViewport()) {
-      renderCreasePattern2D(cpCtx, cpCanvas.width, frame.creases, state.isDark);
+      const pSpec = state.mode === 'free' ? state.freePaper : (getActiveModel().paper || { width: 2, height: 2 });
+      const pAspect = (pSpec?.width || 2) / (pSpec?.height || 2);
+      renderCreasePattern2D(cpCtx, cpCanvas.width, frame.creases, state.isDark, pAspect);
     }
   }
 
@@ -2181,6 +2283,27 @@ export function initOrigamiStudio() {
   $('layer-all').addEventListener('click', () => setLayerScope('all'));
   $('layer-top').addEventListener('click', () => setLayerScope('top'));
   if ($('layer-bottom')) $('layer-bottom').addEventListener('click', () => setLayerScope('bottom'));
+  document.querySelectorAll('[data-paper-size]').forEach(btn => {
+    btn.addEventListener('click', () => applyPaperSizePreset(btn.dataset.paperSize));
+  });
+  if ($('btn-paper-orient')) {
+    $('btn-paper-orient').addEventListener('click', swapPaperOrientation);
+  }
+  const applyCustomPaperFromInputs = () => {
+    const wVal = parseFloat($('paper-custom-w')?.value || '15');
+    const hVal = parseFloat($('paper-custom-h')?.value || '15');
+    if (!Number.isFinite(wVal) || !Number.isFinite(hVal) || wVal <= 0 || hVal <= 0) return;
+    const spec = makePaperSpec(wVal, hVal, 0, 'custom');
+    setFreePaperSize(spec, `${spec.cmW}×${spec.cmH} (${formatRatioLabel(spec)})`);
+  };
+  if ($('btn-paper-custom-apply')) {
+    $('btn-paper-custom-apply').addEventListener('click', applyCustomPaperFromInputs);
+  }
+  for (const id of ['paper-custom-w', 'paper-custom-h']) {
+    const el = $(id);
+    if (el) el.addEventListener('keydown', (e) => { if (e.key === 'Enter') applyCustomPaperFromInputs(); });
+  }
+
   document.querySelectorAll('[data-macro]').forEach(btn => btn.addEventListener('click', () => applyQuickMacro(btn.dataset.macro)));
   $('btn-undo').addEventListener('click', undoFreeStep);
   $('btn-redo').addEventListener('click', redoFreeStep);

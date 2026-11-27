@@ -1262,28 +1262,33 @@ function roundRect(ctx, x, y, w, h, r) {
 
 /**
  * Render the 2D Crease Pattern (전개도) mini-canvas showing all Valley (blue)
- * and Mountain (red) crease lines mapped onto the original square sheet.
+ * and Mountain (red) crease lines mapped onto the paper's true aspect ratio.
  */
-export function renderCreasePattern2D(ctx, size, creases, isDark = false) {
+export function renderCreasePattern2D(ctx, size, creases, isDark = false, paperAspect = 1) {
   ctx.clearRect(0, 0, size, size);
   const pad = 10;
-  const inner = size - pad * 2;
+  const maxInner = size - pad * 2;
+  const aspect = Math.max(0.25, Math.min(4.0, Number.isFinite(paperAspect) && paperAspect > 0 ? paperAspect : 1));
+  const drawW = aspect >= 1 ? maxInner : maxInner * aspect;
+  const drawH = aspect >= 1 ? maxInner / aspect : maxInner;
+  const ox = (size - drawW) * 0.5;
+  const oy = (size - drawH) * 0.5;
 
   ctx.fillStyle = isDark ? '#25232a' : '#fbf8f2';
   ctx.strokeStyle = isDark ? 'rgba(255,255,255,0.25)' : 'rgba(120,100,80,0.4)';
   ctx.lineWidth = 1.5;
-  ctx.fillRect(pad, pad, inner, inner);
-  ctx.strokeRect(pad, pad, inner, inner);
+  ctx.fillRect(ox, oy, drawW, drawH);
+  ctx.strokeRect(ox, oy, drawW, drawH);
 
   if (!creases || creases.length === 0) return;
 
   ctx.save();
   ctx.lineCap = 'round';
   for (const c of creases) {
-    const x1 = pad + c.u1 * inner;
-    const y1 = pad + (1 - c.v1) * inner;
-    const x2 = pad + c.u2 * inner;
-    const y2 = pad + (1 - c.v2) * inner;
+    const x1 = ox + c.u1 * drawW;
+    const y1 = oy + (1 - c.v1) * drawH;
+    const x2 = ox + c.u2 * drawW;
+    const y2 = oy + (1 - c.v2) * drawH;
     const isM = c.type === 'mountain';
     ctx.beginPath();
     ctx.setLineDash(isM ? [5, 2.5, 1.5, 2.5] : [4, 3]);

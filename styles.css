@@ -1600,6 +1600,156 @@ html, body {
 
 .quick-btn.active-layer .q-lbl { color: #0f766e; }
 
+/* Paper Size & Ratio Selector */
+.paper-orient-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  border: 1px solid var(--border, rgba(120, 100, 80, 0.24));
+  background: var(--card, #ffffff);
+  color: var(--muted-foreground, #6b635b);
+  font-size: 10.5px;
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+
+.paper-orient-btn:hover {
+  border-color: #cf4436;
+  color: #cf4436;
+  background: rgba(207, 68, 54, 0.08);
+}
+
+.paper-size-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 5px;
+}
+
+.paper-size-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 6px 4px 5px;
+  border-radius: 9px;
+  border: 1px solid var(--border, rgba(120, 100, 80, 0.22));
+  background: var(--card, #ffffff);
+  color: var(--foreground, #1f1b18);
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+
+.paper-size-btn:hover {
+  border-color: #cf4436;
+  background: rgba(207, 68, 54, 0.05);
+}
+
+.paper-size-btn.active {
+  border-color: #cf4436;
+  background: rgba(207, 68, 54, 0.10);
+  box-shadow: inset 0 0 0 1px #cf4436;
+  color: #b83326;
+}
+
+.ps-icon {
+  display: inline-block;
+  border: 1.5px solid currentColor;
+  border-radius: 2px;
+  opacity: 0.72;
+  margin-bottom: 1px;
+  box-sizing: border-box;
+}
+
+.paper-size-btn.active .ps-icon {
+  border-color: #cf4436;
+  background: rgba(207, 68, 54, 0.18);
+  opacity: 1;
+}
+
+.ps-square  { width: 14px; height: 14px; }
+.ps-a4      { width: 11px; height: 15px; }
+.ps-letter  { width: 12px; height: 15px; }
+.ps-rect21  { width: 9px;  height: 16px; }
+.ps-bill    { width: 18px; height: 9px; margin-top: 3px; margin-bottom: 4px; }
+.ps-diamond { width: 11px; height: 11px; transform: rotate(45deg); margin-top: 2px; margin-bottom: 2px; }
+
+.ps-name {
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+.ps-ratio {
+  font-size: 9.5px;
+  color: var(--muted-foreground, #78716c);
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}
+
+.paper-size-btn.active .ps-ratio {
+  color: #b83326;
+}
+
+.paper-custom-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 6px;
+  padding: 5px 7px;
+  border-radius: 8px;
+  border: 1px solid var(--border, rgba(120, 100, 80, 0.2));
+  background: var(--muted, #f6f2eb);
+}
+
+.paper-custom-lbl {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--muted-foreground, #6b635b);
+  white-space: nowrap;
+}
+
+.paper-custom-row input[type="number"] {
+  width: 48px;
+  flex: 1;
+  min-width: 0;
+  padding: 3px 5px;
+  border-radius: 6px;
+  border: 1px solid var(--border, rgba(120, 100, 80, 0.25));
+  background: var(--card, #ffffff);
+  color: var(--foreground, #1f1b18);
+  font-size: 11.5px;
+  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  text-align: center;
+}
+
+.paper-custom-x {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted-foreground, #78716c);
+}
+
+.paper-custom-apply {
+  padding: 4px 9px;
+  border-radius: 6px;
+  border: 1px solid #cf4436;
+  background: #cf4436;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: opacity 0.14s ease;
+}
+
+.paper-custom-apply:hover {
+  opacity: 0.9;
+}
+
 /* Timeline Loop Button */
 .loop-btn {
   width: 30px;
