@@ -141,6 +141,53 @@ function extractCreaseSegmentUV(posPoly, negPoly, planeOrigin, planeNormal) {
 }
 
 /**
+ * Compute exact 3D crease hinge (origin + unit axis) for a moving polygon piece so
+ * faces sitting at z != 0 (e.g. after a pleat or partial-angle fold) stay 100% welded
+ * along their cut edge with zero Z-discontinuity.
+ */
+function computeFaceHinge(pos, neg, movingPoly, p1, planeNormal, axis) {
+  if (pos && neg) {
+    const onPlane = [];
+    for (let i = 0; i < pos.pts.length; i++) {
+      const p = pos.pts[i];
+      if (Math.abs(dot(sub(p, p1), planeNormal)) < 1e-3) {
+        onPlane.push(p);
+      }
+    }
+    if (onPlane.length >= 2) {
+      let bestD = -1, a = onPlane[0], b = onPlane[1];
+      for (let i = 0; i < onPlane.length; i++) {
+        for (let j = i + 1; j < onPlane.length; j++) {
+          const dd = dist(onPlane[i], onPlane[j]);
+          if (dd > bestD) { bestD = dd; a = onPlane[i]; b = onPlane[j]; }
+        }
+      }
+      if (bestD > 1e-5) {
+        let hAxis = norm(sub(b, a));
+        if (dot(hAxis, axis) < 0) hAxis = scale(hAxis, -1);
+        return { origin: a, axis: hAxis };
+      }
+    }
+  }
+  if (movingPoly && movingPoly.pts.length > 0) {
+    let minZ = Infinity, maxZ = -Infinity, sumZ = 0;
+    for (const p of movingPoly.pts) {
+      const z = p.z || 0;
+      if (z < minZ) minZ = z;
+      if (z > maxZ) maxZ = z;
+      sumZ += z;
+    }
+    if (maxZ - minZ < 1e-3) {
+      const avgZ = sumZ / movingPoly.pts.length;
+      if (Math.abs(avgZ) > 1e-4) {
+        return { origin: v3(p1.x, p1.y, avgZ), axis };
+      }
+    }
+  }
+  return { origin: p1, axis };
+}
+
+/**
  * Prepare a single planar step on a base PaperState, returning a fast evaluator
  * function(t in [0,1]) -> { faces, guides, creases } and the final end state.
  */
@@ -259,7 +306,8 @@ export function compilePlanarStep(baseState, step) {
           nextWork.push({ ...stayPoly, layer: f.layer, foldIdx: -1, origIdx: f.origIdx });
         }
         if (movingPoly) {
-          nextWork.push({ ...movingPoly, layer: f.layer, foldIdx: fi, origIdx: f.origIdx });
+          const hinge = computeFaceHinge(pos, neg, movingPoly, p1, planeNormal, axis);
+          nextWork.push({ ...movingPoly, layer: f.layer, foldIdx: fi, origIdx: f.origIdx, hingeOrigin: hinge.origin, hingeAxis: hinge.axis });
         }
       }
       workFaces = nextWork;
@@ -282,8 +330,10 @@ export function compilePlanarStep(baseState, step) {
             ? maxAll + 1 + (maxAll - f.layer)
             : minAll - 1 - (f.layer - minAll);
         }
+        const hOrigin = f.hingeOrigin || info.origin;
+        const hAxis = f.hingeAxis || info.axis;
         return {
-          pts: f.pts.map(p => rotateAroundAxis(p, info.origin, info.axis, ang)),
+          pts: f.pts.map(p => rotateAroundAxis(p, hOrigin, hAxis, ang)),
           uvs: f.uvs,
           layer,
         };
@@ -457,7 +507,10 @@ export function compilePlanarStep(baseState, step) {
     const movingPoly = side > 0 ? pos : neg;
     const stayPoly = side > 0 ? neg : pos;
     if (stayPoly) stayFaces.push({ ...stayPoly, layer: f.layer });
-    if (movingPoly) moveFaces.push({ ...movingPoly, layer: f.layer });
+    if (movingPoly) {
+      const hinge = computeFaceHinge(pos, neg, movingPoly, p1, planeNormal, axis);
+      moveFaces.push({ ...movingPoly, layer: f.layer, hingeOrigin: hinge.origin, hingeAxis: hinge.axis });
+    }
   }
 
   const allLayers = [...stayFaces, ...moveFaces].map(f => f.layer);
@@ -493,8 +546,10 @@ export function compilePlanarStep(baseState, step) {
           ? maxAll + 1 + (moveMax - f.layer)
           : minAll - 1 - (f.layer - moveMin);
       }
+      const hOrigin = f.hingeOrigin || p1;
+      const hAxis = f.hingeAxis || axis;
       outFaces.push({
-        pts: f.pts.map(p => rotateAroundAxis(p, p1, axis, ang)),
+        pts: f.pts.map(p => rotateAroundAxis(p, hOrigin, hAxis, ang)),
         uvs: f.uvs,
         layer,
       });
@@ -806,39 +861,52 @@ function segIntersect2D(a, b, c, d) {
 export function computeSnapPoints(paperState) {
   const raw = [];
   const priority = { vertex: 4, center: 3, intersect: 2, midpoint: 1, quarter: 0 };
-  const addUnique = (p, kind) => {
+  const addUnique = (p, kind, layer = 0, edgeLen = 1) => {
     for (const q of raw) {
       if (Math.hypot(q.x - p.x, q.y - p.y) < 0.03) {
         if ((priority[kind] || 0) > (priority[q.kind] || 0)) q.kind = kind;
+        if (layer < q.minLayer) q.minLayer = layer;
+        if (layer > q.maxLayer) q.maxLayer = layer;
+        if (edgeLen > q.edgeLen) q.edgeLen = edgeLen;
         return;
       }
     }
-    raw.push({ x: p.x, y: p.y, z: p.z || 0, kind });
+    raw.push({ x: p.x, y: p.y, z: p.z || 0, kind, minLayer: layer, maxLayer: layer, edgeLen });
   };
 
   // Deduplicate unique 2D edges for fast intersection & quarter-point detection
   const uniqueEdges = [];
-  const addEdge = (a, b) => {
+  const addEdge = (a, b, layer) => {
     const len = Math.hypot(b.x - a.x, b.y - a.y);
     if (len < 0.06) return;
     for (const e of uniqueEdges) {
       const sameDir = Math.hypot(e.a.x - a.x, e.a.y - a.y) < 0.025 && Math.hypot(e.b.x - b.x, e.b.y - b.y) < 0.025;
       const revDir = Math.hypot(e.a.x - b.x, e.a.y - b.y) < 0.025 && Math.hypot(e.b.x - a.x, e.b.y - a.y) < 0.025;
-      if (sameDir || revDir) return;
+      if (sameDir || revDir) {
+        if (layer < e.minLayer) e.minLayer = layer;
+        if (layer > e.maxLayer) e.maxLayer = layer;
+        return;
+      }
     }
-    uniqueEdges.push({ a, b, len });
+    uniqueEdges.push({ a, b, len, minLayer: layer, maxLayer: layer });
   };
 
+  let gMinLayer = Infinity, gMaxLayer = -Infinity;
   for (const f of paperState.faces) {
+    const fl = f.layer || 0;
+    if (fl < gMinLayer) gMinLayer = fl;
+    if (fl > gMaxLayer) gMaxLayer = fl;
     const n = f.pts.length;
     for (let i = 0; i < n; i++) {
       const a = f.pts[i];
       const b = f.pts[(i + 1) % n];
-      addUnique(a, 'vertex');
-      addUnique({ x: (a.x + b.x) * 0.5, y: (a.y + b.y) * 0.5, z: (a.z + b.z) * 0.5 }, 'midpoint');
-      addEdge(a, b);
+      const eLen = Math.hypot(b.x - a.x, b.y - a.y);
+      addUnique(a, 'vertex', fl, eLen);
+      addUnique({ x: (a.x + b.x) * 0.5, y: (a.y + b.y) * 0.5, z: (a.z + b.z) * 0.5 }, 'midpoint', fl, eLen);
+      addEdge(a, b, fl);
     }
   }
+  if (!Number.isFinite(gMinLayer)) { gMinLayer = 0; gMaxLayer = 0; }
 
   // Add centroid of bounding box
   let minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;
@@ -849,7 +917,9 @@ export function computeSnapPoints(paperState) {
     if (p.y > maxY) maxY = p.y;
   }
   if (raw.length > 0) {
-    addUnique({ x: (minX + maxX) * 0.5, y: (minY + maxY) * 0.5, z: 0 }, 'center');
+    addUnique({ x: (minX + maxX) * 0.5, y: (minY + maxY) * 0.5, z: 0 }, 'center', gMaxLayer, 1);
+    const cPt = raw.find(q => q.kind === 'center');
+    if (cPt) { cPt.minLayer = gMinLayer; cPt.maxLayer = gMaxLayer; }
   }
 
   // Crease / edge interior intersections (capped for complex folded meshes)
@@ -857,7 +927,11 @@ export function computeSnapPoints(paperState) {
   for (let i = 0; i < edgeLimit; i++) {
     for (let j = i + 1; j < edgeLimit; j++) {
       const hit = segIntersect2D(uniqueEdges[i].a, uniqueEdges[i].b, uniqueEdges[j].a, uniqueEdges[j].b);
-      if (hit) addUnique(hit, 'intersect');
+      if (hit) {
+        addUnique(hit, 'intersect', Math.max(uniqueEdges[i].maxLayer, uniqueEdges[j].maxLayer), 1);
+        const q = raw.find(r => Math.hypot(r.x - hit.x, r.y - hit.y) < 0.03);
+        if (q) q.minLayer = Math.min(q.minLayer, uniqueEdges[i].minLayer, uniqueEdges[j].minLayer);
+      }
     }
   }
 
@@ -865,10 +939,16 @@ export function computeSnapPoints(paperState) {
   const paperSpan = Math.max(0.4, Math.hypot(maxX - minX, maxY - minY));
   const minQuarterLen = Math.max(0.55, paperSpan * 0.34);
   for (let i = 0; i < edgeLimit; i++) {
-    const { a, b, len } = uniqueEdges[i];
+    const { a, b, len, minLayer, maxLayer } = uniqueEdges[i];
     if (len < minQuarterLen) continue;
-    addUnique({ x: a.x + (b.x - a.x) * 0.25, y: a.y + (b.y - a.y) * 0.25, z: a.z + (b.z - a.z) * 0.25 }, 'quarter');
-    addUnique({ x: a.x + (b.x - a.x) * 0.75, y: a.y + (b.y - a.y) * 0.75, z: a.z + (b.z - a.z) * 0.75 }, 'quarter');
+    const p25 = { x: a.x + (b.x - a.x) * 0.25, y: a.y + (b.y - a.y) * 0.25, z: a.z + (b.z - a.z) * 0.25 };
+    const p75 = { x: a.x + (b.x - a.x) * 0.75, y: a.y + (b.y - a.y) * 0.75, z: a.z + (b.z - a.z) * 0.75 };
+    addUnique(p25, 'quarter', maxLayer, len);
+    addUnique(p75, 'quarter', maxLayer, len);
+    const q1 = raw.find(r => Math.hypot(r.x - p25.x, r.y - p25.y) < 0.03);
+    if (q1) q1.minLayer = Math.min(q1.minLayer, minLayer);
+    const q2 = raw.find(r => Math.hypot(r.x - p75.x, r.y - p75.y) < 0.03);
+    if (q2) q2.minLayer = Math.min(q2.minLayer, minLayer);
   }
 
   return raw;

@@ -290,7 +290,17 @@ console.log('\n=== 7. Verifying Double-Sided Folding (Front vs Back, Back Pleat,
     { type: 'mountain', p1: [-1, 0], p2: [0, 0], side: 1, angleDeg: 180, layerScope: 'bottom' },
   ]);
   assert(tlBottomLayer.finalState.faces.length === 3, `Expected 3 faces (top stays whole, bottom splits into 2), got ${tlBottomLayer.finalState.faces.length}`);
-  console.log('  [OK] Front/Back folds, back pleat, back pre-crease, and bottom-layer scope verified');
+
+  // 5. 3D Hinge continuity: folding across a non-zero-Z pleat must NOT tear moving piece to -Z
+  const tlPleatThenFold = compilePlanarTimeline({ width: 2, height: 2 }, [
+    { type: 'pleat', p1: [-0.25, -1], p2: [-0.25, 1], side: -1, offset: 0.25, angleDeg: 165 },
+    { type: 'valley', p1: [-1, 0], p2: [1, 0], side: 1, angleDeg: 180 },
+  ]);
+  const allMinZ = Math.min(...tlPleatThenFold.finalState.faces.flatMap(f => f.pts.map(p => p.z)));
+  assert(allMinZ >= -1e-4, `Hinge continuity after pleat+fold: expected no negative Z tearing, got minZ=${allMinZ}`);
+  const snapsWithLayer = computeSnapPoints(tlPleatThenFold.finalState);
+  assert(snapsWithLayer.every(s => Number.isFinite(s.minLayer) && Number.isFinite(s.maxLayer)), 'All snap points carry finite minLayer/maxLayer');
+  console.log('  [OK] Front/Back folds, back pleat, back pre-crease, bottom-layer scope & 3D hinge continuity verified');
 }
 
 console.log(`\nSUMMARY: ${passed} passed, ${failed} failed`);

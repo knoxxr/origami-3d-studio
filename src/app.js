@@ -8,7 +8,7 @@
 import { v3, sub, dot, cross, norm, screenToPlane, worldToCamera, projectPoint } from './math3d.js';
 import { compilePlanarTimeline, compilePlanarStep, computeSnapPoints, createInitialPaper } from './planarEngine.js';
 import { ORIGAMI_CATALOG, PAPER_PRESETS } from './kinematicModels.js';
-import { renderOrigami3D, renderCreasePattern2D } from './renderer3d.js';
+import { renderOrigami3D, renderCreasePattern2D, computeLayerThick } from './renderer3d.js';
 import { GifEncoder } from './gifEncoder.js';
 import { UI_STRINGS, getInitialLang, saveLang, localizeModel } from './i18n.js';
 
@@ -659,15 +659,15 @@ export function initOrigamiStudio() {
           { p1: [0, -1], p2: [1, 0], side: -1, foldType: dir, angleDeg: ang, layerScope: scope },
         ],
       },
-      pleat: { type: 'pleat', foldDir: dir, p1: [-0.25, -1], p2: [-0.25, 1], side: -1, offset: state.freePleatOffset, angleDeg: Math.min(ang, 165), layerScope: scope, label: `Pleat Fold${dirTagEn}`, labelEn: `Pleat Fold${dirTagEn}`, labelKo: `계단 접기${dirTagKo}`, techniqueEn: 'Pleat Fold', techniqueKo: '계단 접기' },
+      pleat: { type: 'pleat', foldDir: dir, p1: [-0.25, -1], p2: [-0.25, 1], side: -1, offset: state.freePleatOffset, angleDeg: ang, layerScope: scope, label: `Pleat Fold${dirTagEn}`, labelEn: `Pleat Fold${dirTagEn}`, labelKo: `계단 접기${dirTagKo}`, techniqueEn: 'Pleat Fold', techniqueKo: '계단 접기' },
       flip: { type: 'flip', axis: 'y', label: 'Flip Paper', labelEn: 'Flip Paper', labelKo: '종이 뒤집기', techniqueEn: 'Flip', techniqueKo: '뒤집기' },
       rot90: { type: 'rotate', angleDeg: 90, label: 'Rotate 90°', labelEn: 'Rotate 90°', labelKo: '90° 회전', techniqueEn: 'Rotate', techniqueKo: '회전' },
       rot45: { type: 'rotate', angleDeg: 45, label: 'Rotate 45°', labelEn: 'Rotate 45°', labelKo: '45° 회전', techniqueEn: 'Rotate', techniqueKo: '회전' },
     };
     if (isMobileViewport()) closeSheet();
     if (macroId === 'accordion') {
-      addFreeStep({ type: 'pleat', foldDir: dir, p1: [-0.45, -1], p2: [-0.45, 1], side: -1, offset: 0.25, angleDeg: Math.min(ang, 155), layerScope: scope, label: `Accordion Pleat 1${dirTagEn}`, labelEn: `Accordion Pleat 1${dirTagEn}`, labelKo: `아코디언 1단 주름${dirTagKo}`, techniqueEn: 'Pleat Fold', techniqueKo: '계단 접기' });
-      addFreeStep({ type: 'pleat', foldDir: dir, p1: [0.15, -1], p2: [0.15, 1], side: -1, offset: 0.25, angleDeg: Math.min(ang, 155), layerScope: scope, label: `Accordion Pleat 2${dirTagEn}`, labelEn: `Accordion Pleat 2${dirTagEn}`, labelKo: `아코디언 2단 주름${dirTagKo}`, techniqueEn: 'Pleat Fold', techniqueKo: '계단 접기' });
+      addFreeStep({ type: 'pleat', foldDir: dir, p1: [-0.45, -1], p2: [-0.45, 1], side: -1, offset: 0.25, angleDeg: ang, layerScope: scope, label: `Accordion Pleat 1${dirTagEn}`, labelEn: `Accordion Pleat 1${dirTagEn}`, labelKo: `아코디언 1단 주름${dirTagKo}`, techniqueEn: 'Pleat Fold', techniqueKo: '계단 접기' });
+      addFreeStep({ type: 'pleat', foldDir: dir, p1: [0.15, -1], p2: [0.15, 1], side: -1, offset: 0.25, angleDeg: ang, layerScope: scope, label: `Accordion Pleat 2${dirTagEn}`, labelEn: `Accordion Pleat 2${dirTagEn}`, labelKo: `아코디언 2단 주름${dirTagKo}`, techniqueEn: 'Pleat Fold', techniqueKo: '계단 접기' });
       return;
     }
     if (macroId === 'grid') {
@@ -689,11 +689,16 @@ export function initOrigamiStudio() {
 
   function findNearestSnap(sx, sy, w, h, radiusPx = 28, excludePt = null, allowMinor = true) {
     if (!lastCam || state.snapPoints.length === 0) return null;
+    const faces = state.compiledPlanar?.finalState?.faces;
+    const layerThick = computeLayerThick(faces);
+    const viewSideZ = (lastCam.eye.z - lastCam.target.z) >= 0 ? 1 : -1;
     let best = null, bestScore = radiusPx;
     for (const sp of state.snapPoints) {
       if (!allowMinor && (sp.kind === 'quarter' || sp.kind === 'intersect')) continue;
       if (excludePt && Math.hypot(sp.x - excludePt.x, sp.y - excludePt.y) < 0.08) continue;
-      const pr = projectPoint(worldToCamera(sp, lastCam), w, h);
+      const spLayer = viewSideZ >= 0 ? (sp.maxLayer ?? 0) : (sp.minLayer ?? 0);
+      const spWorld = v3(sp.x, sp.y, (sp.z || 0) + spLayer * layerThick);
+      const pr = projectPoint(worldToCamera(spWorld, lastCam), w, h);
       const d = Math.hypot(pr.x - sx, pr.y - sy);
       if (d >= radiusPx) continue;
       // Slight preference for vertices/intersections/center over quarter points when close
