@@ -827,7 +827,12 @@ export function compilePlanarTimeline(initialConfig, steps) {
         return { faces: initState.faces, creases: initState.creases, guides: [] };
       }
       const clampedIdx = Math.max(0, Math.min(compiledSteps.length - 1, stepIdx));
-      return compiledSteps[clampedIdx].evaluate(Math.max(0, Math.min(1, t)));
+      const clampedT = Math.max(0, Math.min(1, t));
+      if (clampedT >= 0.9999) {
+        const end = compiledSteps[clampedIdx].endState;
+        return { faces: end.faces, creases: end.creases, guides: [] };
+      }
+      return compiledSteps[clampedIdx].evaluate(clampedT);
     },
   };
 }

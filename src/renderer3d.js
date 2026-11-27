@@ -25,13 +25,23 @@ function clamp255(v) {
   return Math.max(0, Math.min(255, Math.round(v)));
 }
 
-function shadePaperColor(baseRgb, normal, viewDir, layer, isBack, isDark) {
+function buildStudioLights(cam) {
+  const toCam = scale(cam.forward, -1);
+  const camVec = (rx, uy, cz) => norm(add(add(scale(cam.right, rx), scale(cam.up, uy)), scale(toCam, cz)));
+  return {
+    keyLight: camVec(-0.42, 0.68, 0.65),
+    fillLight: camVec(0.55, -0.28, 0.52),
+    rimLight: camVec(0.15, 0.35, -0.92),
+  };
+}
+
+function shadePaperColor(baseRgb, normal, viewDir, layer, isBack, isDark, lights = null) {
   // Orient normal toward viewer for lighting computation
   const n = dot(normal, viewDir) >= 0 ? normal : scale(normal, -1);
 
-  const keyLight = norm(v3(-0.42, 0.68, 0.65));
-  const fillLight = norm(v3(0.55, -0.28, 0.52));
-  const rimLight = norm(v3(0.15, 0.35, -0.92));
+  const keyLight = lights ? lights.keyLight : norm(v3(-0.42, 0.68, 0.65));
+  const fillLight = lights ? lights.fillLight : norm(v3(0.55, -0.28, 0.52));
+  const rimLight = lights ? lights.rimLight : norm(v3(0.15, 0.35, -0.92));
 
   const nDotKey = Math.max(0, dot(n, keyLight));
   const nDotFill = Math.max(0, dot(n, fillLight));
@@ -420,6 +430,7 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
   const renderItems = [];
   const layerThick = computeLayerThick(faces);
   const viewSideZ = (cam.eye.z - cam.target.z) >= 0 ? 1 : -1;
+  const studioLights = buildStudioLights(cam);
 
   for (let i = 0; i < faces.length; i++) {
     const f = faces[i];
@@ -457,13 +468,15 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
       camN = scale(camN, -1);
     }
 
+    const layerKey = (f.layer || 0) * viewSideZ;
     const shaded = shadePaperColor(
       frontFacing ? frontRgb : backRgb,
       normal,
       viewDir,
-      f.layer || 0,
+      layerKey,
       !frontFacing,
-      isDark
+      isDark,
+      studioLights
     );
 
     renderItems.push({
@@ -585,8 +598,8 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
           // Real origami spine wraps the outer camera-facing paper surface cleanly
           const outerItem = itemA.layerKey >= itemB.layerKey ? itemA : itemB;
           const baseRgb = outerItem.frontFacing ? frontRgb : backRgb;
-          const avgLayer = ((itemA.origFace.layer || 0) + (itemB.origFace.layer || 0)) * 0.5;
-          const shaded = shadePaperColor(baseRgb, qNorm, qView, avgLayer, !outerItem.frontFacing, isDark);
+          const avgLayerKey = (itemA.layerKey + itemB.layerKey) * 0.5;
+          const shaded = shadePaperColor(baseRgb, qNorm, qView, avgLayerKey, !outerItem.frontFacing, isDark, studioLights);
           const spineMinLayerKey = Math.min(itemA.layerKey, itemB.layerKey);
           const spineMaxLayerKey = Math.max(itemA.layerKey, itemB.layerKey);
 
@@ -795,7 +808,7 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
       if (cp1.z <= 0.1 || cp2.z <= 0.1) continue;
       const s1 = projectPoint(cp1, width, height);
       const s2 = projectPoint(cp2, width, height);
-      const isMountain = g.type === 'mountain';
+      const isMountain = viewSideZ >= 0 ? (g.type === 'mountain') : (g.type !== 'mountain');
 
       // Subtle light halo behind dashed guide so it reads clearly on dark & light paper
       ctx.beginPath();

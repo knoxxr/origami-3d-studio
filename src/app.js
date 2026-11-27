@@ -628,10 +628,33 @@ export function initOrigamiStudio() {
     syncUI();
   }
 
+  /**
+   * True when the camera is currently facing the rear (-Z) side of the paper.
+   * All Free Studio fold directions, layer scopes, and macros resolve relative
+   * to whichever side of the paper the user is currently looking at.
+   */
+  function isViewingBackSide() {
+    if (lastCam) return (lastCam.eye.z - lastCam.target.z) < 0;
+    return Math.cos(state.camera.pitch) * Math.cos(state.camera.yaw) < 0;
+  }
+
+  function resolveWorldFoldDir(uiDir) {
+    if (!isViewingBackSide()) return uiDir;
+    return uiDir === 'mountain' ? 'valley' : 'mountain';
+  }
+
+  function resolveWorldLayerScope(uiScope = state.freeLayerScope) {
+    if (!isViewingBackSide() || uiScope === 'all') return uiScope;
+    return uiScope === 'top' ? 'bottom' : 'top';
+  }
+
   function applyQuickMacro(macroId) {
-    const scope = state.freeLayerScope;
-    const dir = state.freeFoldDir === 'mountain' ? 'mountain' : 'valley';
-    const isBack = dir === 'mountain';
+    const viewingBack = isViewingBackSide();
+    const xSign = viewingBack ? -1 : 1;
+    const scope = resolveWorldLayerScope(state.freeLayerScope);
+    const uiDir = state.freeFoldDir === 'mountain' ? 'mountain' : 'valley';
+    const dir = resolveWorldFoldDir(uiDir);
+    const isBack = uiDir === 'mountain';
     const ang = state.freeAngle;
     const dirWordEn = isBack ? 'Mountain' : 'Valley';
     const dirWordKo = isBack ? '뒷면(산)' : '앞면(계곡)';
@@ -640,8 +663,8 @@ export function initOrigamiStudio() {
     const techEn = isBack ? 'Mountain Fold' : 'Valley Fold';
     const techKo = isBack ? '뒷면(산) 접기' : '앞면(계곡) 접기';
     const macros = {
-      diag: { type: dir, p1: [-1, -1], p2: [1, 1], side: -1, angleDeg: ang, layerScope: scope, label: `Diagonal ${dirWordEn} Fold`, labelEn: `Diagonal ${dirWordEn} Fold`, labelKo: `대각선 ${dirWordKo} 접기`, techniqueEn: techEn, techniqueKo: techKo },
-      halfV: { type: dir, p1: [0, -1], p2: [0, 1], side: -1, angleDeg: ang, layerScope: scope, label: `Vertical Half Fold${dirTagEn}`, labelEn: `Vertical Half Fold${dirTagEn}`, labelKo: `세로 반 접기${dirTagKo}`, techniqueEn: techEn, techniqueKo: techKo },
+      diag: { type: dir, p1: [-xSign, -1], p2: [xSign, 1], side: -xSign, angleDeg: ang, layerScope: scope, label: `Diagonal ${dirWordEn} Fold`, labelEn: `Diagonal ${dirWordEn} Fold`, labelKo: `대각선 ${dirWordKo} 접기`, techniqueEn: techEn, techniqueKo: techKo },
+      halfV: { type: dir, p1: [0, -1], p2: [0, 1], side: -xSign, angleDeg: ang, layerScope: scope, label: `Vertical Half Fold${dirTagEn}`, labelEn: `Vertical Half Fold${dirTagEn}`, labelKo: `세로 반 접기${dirTagKo}`, techniqueEn: techEn, techniqueKo: techKo },
       halfH: { type: dir, p1: [-1, 0], p2: [1, 0], side: 1, angleDeg: ang, layerScope: scope, label: `Horizontal Half Fold${dirTagEn}`, labelEn: `Horizontal Half Fold${dirTagEn}`, labelKo: `가로 반 접기${dirTagKo}`, techniqueEn: techEn, techniqueKo: techKo },
       kite: {
         type: 'multiFold', label: `Kite Fold${dirTagEn}`, labelEn: `Kite Fold${dirTagEn}`, labelKo: `아이스크림 접기${dirTagKo}`, techniqueEn: 'Kite Fold', techniqueKo: '아이스크림 접기',
@@ -659,19 +682,19 @@ export function initOrigamiStudio() {
           { p1: [0, -1], p2: [1, 0], side: -1, foldType: dir, angleDeg: ang, layerScope: scope },
         ],
       },
-      pleat: { type: 'pleat', foldDir: dir, p1: [-0.25, -1], p2: [-0.25, 1], side: -1, offset: state.freePleatOffset, angleDeg: ang, layerScope: scope, label: `Pleat Fold${dirTagEn}`, labelEn: `Pleat Fold${dirTagEn}`, labelKo: `계단 접기${dirTagKo}`, techniqueEn: 'Pleat Fold', techniqueKo: '계단 접기' },
+      pleat: { type: 'pleat', foldDir: dir, p1: [-0.25 * xSign, -1], p2: [-0.25 * xSign, 1], side: -xSign, offset: state.freePleatOffset, angleDeg: ang, layerScope: scope, label: `Pleat Fold${dirTagEn}`, labelEn: `Pleat Fold${dirTagEn}`, labelKo: `계단 접기${dirTagKo}`, techniqueEn: 'Pleat Fold', techniqueKo: '계단 접기' },
       flip: { type: 'flip', axis: 'y', label: 'Flip Paper', labelEn: 'Flip Paper', labelKo: '종이 뒤집기', techniqueEn: 'Flip', techniqueKo: '뒤집기' },
-      rot90: { type: 'rotate', angleDeg: 90, label: 'Rotate 90°', labelEn: 'Rotate 90°', labelKo: '90° 회전', techniqueEn: 'Rotate', techniqueKo: '회전' },
-      rot45: { type: 'rotate', angleDeg: 45, label: 'Rotate 45°', labelEn: 'Rotate 45°', labelKo: '45° 회전', techniqueEn: 'Rotate', techniqueKo: '회전' },
+      rot90: { type: 'rotate', angleDeg: 90 * xSign, label: 'Rotate 90°', labelEn: 'Rotate 90°', labelKo: '90° 회전', techniqueEn: 'Rotate', techniqueKo: '회전' },
+      rot45: { type: 'rotate', angleDeg: 45 * xSign, label: 'Rotate 45°', labelEn: 'Rotate 45°', labelKo: '45° 회전', techniqueEn: 'Rotate', techniqueKo: '회전' },
     };
     if (isMobileViewport()) closeSheet();
     if (macroId === 'accordion') {
-      addFreeStep({ type: 'pleat', foldDir: dir, p1: [-0.45, -1], p2: [-0.45, 1], side: -1, offset: 0.25, angleDeg: ang, layerScope: scope, label: `Accordion Pleat 1${dirTagEn}`, labelEn: `Accordion Pleat 1${dirTagEn}`, labelKo: `아코디언 1단 주름${dirTagKo}`, techniqueEn: 'Pleat Fold', techniqueKo: '계단 접기' });
-      addFreeStep({ type: 'pleat', foldDir: dir, p1: [0.15, -1], p2: [0.15, 1], side: -1, offset: 0.25, angleDeg: ang, layerScope: scope, label: `Accordion Pleat 2${dirTagEn}`, labelEn: `Accordion Pleat 2${dirTagEn}`, labelKo: `아코디언 2단 주름${dirTagKo}`, techniqueEn: 'Pleat Fold', techniqueKo: '계단 접기' });
+      addFreeStep({ type: 'pleat', foldDir: dir, p1: [-0.45 * xSign, -1], p2: [-0.45 * xSign, 1], side: -xSign, offset: 0.25, angleDeg: ang, layerScope: scope, label: `Accordion Pleat 1${dirTagEn}`, labelEn: `Accordion Pleat 1${dirTagEn}`, labelKo: `아코디언 1단 주름${dirTagKo}`, techniqueEn: 'Pleat Fold', techniqueKo: '계단 접기' });
+      addFreeStep({ type: 'pleat', foldDir: dir, p1: [0.15 * xSign, -1], p2: [0.15 * xSign, 1], side: -xSign, offset: 0.25, angleDeg: ang, layerScope: scope, label: `Accordion Pleat 2${dirTagEn}`, labelEn: `Accordion Pleat 2${dirTagEn}`, labelKo: `아코디언 2단 주름${dirTagKo}`, techniqueEn: 'Pleat Fold', techniqueKo: '계단 접기' });
       return;
     }
     if (macroId === 'grid') {
-      addFreeStep({ type: 'precrease', foldDir: dir, creaseType: dir, p1: [0, -1], p2: [0, 1], side: -1, label: `Vertical Center Pre-crease${dirTagEn}`, labelEn: `Vertical Center Pre-crease${dirTagEn}`, labelKo: `세로 중심 예비선${dirTagKo}`, techniqueEn: 'Pre-crease', techniqueKo: '접었다 펴기' });
+      addFreeStep({ type: 'precrease', foldDir: dir, creaseType: dir, p1: [0, -1], p2: [0, 1], side: -xSign, label: `Vertical Center Pre-crease${dirTagEn}`, labelEn: `Vertical Center Pre-crease${dirTagEn}`, labelKo: `세로 중심 예비선${dirTagKo}`, techniqueEn: 'Pre-crease', techniqueKo: '접었다 펴기' });
       addFreeStep({ type: 'precrease', foldDir: dir, creaseType: dir, p1: [-1, 0], p2: [1, 0], side: 1, label: `Horizontal Center Pre-crease${dirTagEn}`, labelEn: `Horizontal Center Pre-crease${dirTagEn}`, labelKo: `가로 중심 예비선${dirTagKo}`, techniqueEn: 'Pre-crease', techniqueKo: '접었다 펴기' });
       return;
     }
@@ -937,27 +960,30 @@ export function initOrigamiStudio() {
     const leftNormal = norm(cross(v3(0, 0, 1), dir));
     const side = dot(sub(state.dragStart, mid), leftNormal) >= 0 ? 1 : -1;
 
-    const effDir = getEffectiveFoldDir();
-    const effTool = getEffectiveDragTool();
-    const isBack = effDir === 'mountain';
+    const uiDir = getEffectiveFoldDir();
+    const uiTool = getEffectiveDragTool();
+    const worldDir = resolveWorldFoldDir(uiDir);
+    const worldTool = (uiTool === 'valley' || uiTool === 'mountain') ? worldDir : uiTool;
+    const worldScope = resolveWorldLayerScope(state.freeLayerScope);
+    const isBack = uiDir === 'mountain';
     const toolNamesEn = { valley: 'Valley Fold', mountain: 'Mountain Fold', precrease: isBack ? 'Back Pre-crease' : 'Pre-crease', pleat: isBack ? 'Back Pleat Fold' : 'Pleat Fold' };
     const toolNamesKo = { valley: '앞면(계곡) 접기', mountain: '뒷면(산) 접기', precrease: isBack ? '뒷면 접었다 펴기' : '접었다 펴기', pleat: isBack ? '뒷면 계단 접기' : '계단 접기' };
     const sufEn = snapKey ? ` · ${UI_STRINGS.en[snapKey]}` : '';
     const sufKo = snapKey ? ` · ${UI_STRINGS.ko[snapKey]}` : '';
 
     const built = buildFoldStepWithMirror({
-      toolType: effTool,
-      foldDir: effDir,
+      toolType: worldTool,
+      foldDir: worldDir,
       p1: [p1.x, p1.y],
       p2: [p2.x, p2.y],
       side,
       angleDeg: state.freeAngle,
-      layerScope: state.freeLayerScope,
+      layerScope: worldScope,
       offset: state.freePleatOffset,
-      labelEn: `${toolNamesEn[effTool]}${sufEn}`,
-      labelKo: `${toolNamesKo[effTool]}${sufKo}`,
-      techniqueEn: toolNamesEn[effTool],
-      techniqueKo: toolNamesKo[effTool],
+      labelEn: `${toolNamesEn[uiTool]}${sufEn}`,
+      labelKo: `${toolNamesKo[uiTool]}${sufKo}`,
+      techniqueEn: toolNamesEn[uiTool],
+      techniqueKo: toolNamesKo[uiTool],
     }, paperBounds);
 
     state.dragCrease = { p1, p2 };
@@ -1215,25 +1241,28 @@ export function initOrigamiStudio() {
       const d = dot(sub(pt, state.pickP1), nrm);
       if (Math.abs(d) < 0.03) return;
       const side = d > 0 ? 1 : -1;
-      const effDir = state.freeFoldDir;
-      const effTool = (state.freeTool === 'valley' || state.freeTool === 'mountain') ? effDir : state.freeTool;
-      const isBack = effDir === 'mountain';
+      const uiDir = state.freeFoldDir;
+      const uiTool = (state.freeTool === 'valley' || state.freeTool === 'mountain') ? uiDir : state.freeTool;
+      const worldDir = resolveWorldFoldDir(uiDir);
+      const worldTool = (state.freeTool === 'valley' || state.freeTool === 'mountain') ? worldDir : state.freeTool;
+      const worldScope = resolveWorldLayerScope(state.freeLayerScope);
+      const isBack = uiDir === 'mountain';
       const toolNamesEn = { valley: 'Valley Fold', mountain: 'Mountain Fold', precrease: isBack ? 'Back Pre-crease' : 'Pre-crease', pleat: isBack ? 'Back Pleat Fold' : 'Pleat Fold' };
       const toolNamesKo = { valley: '앞면(계곡) 접기', mountain: '뒷면(산) 접기', precrease: isBack ? '뒷면 접었다 펴기' : '접었다 펴기', pleat: isBack ? '뒷면 계단 접기' : '계단 접기' };
       const paperBounds = computePaperBounds(state.compiledPlanar.finalState.faces);
       const built = buildFoldStepWithMirror({
-        toolType: effTool,
-        foldDir: effDir,
+        toolType: worldTool,
+        foldDir: worldDir,
         p1: [state.pickP1.x, state.pickP1.y],
         p2: [state.pickP2.x, state.pickP2.y],
         side,
         angleDeg: state.freeAngle,
-        layerScope: state.freeLayerScope,
+        layerScope: worldScope,
         offset: state.freePleatOffset,
-        labelEn: `${toolNamesEn[effTool]} (${state.freeAngle}°)`,
-        labelKo: `${toolNamesKo[effTool]} (${state.freeAngle}°)`,
-        techniqueEn: toolNamesEn[effTool],
-        techniqueKo: toolNamesKo[effTool],
+        labelEn: `${toolNamesEn[uiTool]} (${state.freeAngle}°)`,
+        labelKo: `${toolNamesKo[uiTool]} (${state.freeAngle}°)`,
+        techniqueEn: toolNamesEn[uiTool],
+        techniqueKo: toolNamesKo[uiTool],
       }, paperBounds);
       addFreeStep(built.step);
     }
