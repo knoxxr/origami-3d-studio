@@ -1340,7 +1340,7 @@ function drawFreeStudioOverlay(ctx, width, height, cam, overlay, isDark, layerTh
     dragStart, dragCurrent, dragSnapLabel, dragCrease, dragMirrorCrease = null,
     mirrorAxisX = null, dragIsUnfold = false, unfoldGhost = null, unfoldGhostLabel = 'Unfold',
     dragCancelZone = false, dragCancelLabel = 'Release to cancel',
-    dragPointer = null, dragSnapped = false,
+    dragPointer = null, dragSnapped = false, dragAngleSnap = 0,
   } = overlay;
   ctx.save();
 
@@ -1491,9 +1491,10 @@ function drawFreeStudioOverlay(ctx, width, height, cam, overlay, isDark, layerTh
         ctx.stroke();
 
         ctx.beginPath();
-        ctx.setLineDash(isMountain ? [10, 4, 2, 4] : [8, 5]);
+        // Angle-snapped creases lock in as a firmer line so the 45° click is visible
+        ctx.setLineDash(dragAngleSnap ? (isMountain ? [14, 3, 2, 3] : [14, 3]) : (isMountain ? [10, 4, 2, 4] : [8, 5]));
         ctx.strokeStyle = accent;
-        ctx.lineWidth = 1.8;
+        ctx.lineWidth = dragAngleSnap ? 2.6 : 1.8;
         ctx.moveTo(c1.x, c1.y);
         ctx.lineTo(c2.x, c2.y);
         ctx.stroke();
