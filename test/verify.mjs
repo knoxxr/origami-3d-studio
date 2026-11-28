@@ -341,7 +341,31 @@ console.log('\n=== 8. Verifying Partial Single-Flap Back-Folding, Pocket Tuck & 
     { type: 'valley', p1: [0.45, 0], p2: [0, 0.45], side: -1, angleDeg: 180, layerScope: 'top', seedPoint: [0.05, 0.05] },
   ]);
   assert(tlBlintzOneFlap.finalState.faces.length === 6, `Expected 6 faces (1 base + 3 untouched sibling flaps + 2 split pieces of grabbed flap), got ${tlBlintzOneFlap.finalState.faces.length}`);
-  console.log('  [OK] Partial opposite-direction 1-flap fold, pocket-tuck ordering & Blintz UV-island isolation verified');
+
+  // 4. Paper airplane center lock-tab: 3-layer downward nose triangle under 2 overlapping wings folds UP OVER top of the wings!
+  const airplaneLockSteps = [
+    { type: 'valley', p1: [0, 1], p2: [1, 0], side: 1, angleDeg: 180 },
+    { type: 'valley', p1: [-1, 0], p2: [0, 1], side: 1, angleDeg: 180 },
+    { type: 'valley', p1: [-1, 0.05], p2: [1, 0.05], side: 1, angleDeg: 180 },
+    { type: 'valley', p1: [-0.9, 0.05], p2: [-0.08, 1.0], side: 1, angleDeg: 180 },
+    { type: 'valley', p1: [0.08, 1.0], p2: [0.9, 0.05], side: 1, angleDeg: 180 },
+  ];
+  const tlPreLock = compilePlanarTimeline({ width: 2, height: 2 }, airplaneLockSteps);
+  const preSnaps = computeSnapPoints(tlPreLock.finalState);
+  const lockTip = preSnaps.find(s => Math.abs(s.x) < 0.1 && s.y < -0.5 && s.y > -0.98);
+  assert(!!lockTip, 'Center lock-tab downward tip snap point exists');
+  const tlLocked = compilePlanarTimeline({ width: 2, height: 2 }, [
+    ...airplaneLockSteps,
+    { type: 'valley', p1: [-1, -0.35], p2: [1, -0.35], side: -1, angleDeg: 180, layerScope: 'top', targetLayer: lockTip.maxLayer, seedPoint: [lockTip.x, lockTip.y] },
+  ]);
+  const maxLockedLayer = Math.max(...tlLocked.finalState.faces.map(f => f.layer));
+  // All 3 folded-up tab pieces should land at the VERY TOP (above the wings!), and NO nose piece should remain dangling at y < -0.8
+  const foldedUpTabFaces = tlLocked.finalState.faces.filter(f => f.layer >= maxLockedLayer - 2.1 && Math.max(...f.pts.map(p => p.y)) > 0.12);
+  const danglingNoseFaces = tlLocked.finalState.faces.filter(f => f.layer > Math.min(...tlLocked.finalState.faces.map(x => x.layer)) + 0.5 && Math.min(...f.pts.map(p => p.y)) < -0.8);
+  assert(foldedUpTabFaces.length === 3, `Expected all 3 layers of lock-tab folded UP over wings, got ${foldedUpTabFaces.length}`);
+  assert(danglingNoseFaces.length === 0, `Expected 0 dangling nose layers left pointing down, got ${danglingNoseFaces.length}`);
+
+  console.log('  [OK] Partial opposite-direction 1-flap fold, pocket-tuck ordering, Blintz UV-island & 3-layer airplane lock-tab verified');
 }
 
 console.log(`\nSUMMARY: ${passed} passed, ${failed} failed`);

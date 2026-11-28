@@ -535,6 +535,7 @@ export function initOrigamiStudio() {
     state.dragShiftFlip = false;
     state.dragAltFree = false;
     state.dragPickedLayer = null;
+    state.dragAutoFlap = false;
     state.lastSnapId = '';
   }
 
@@ -1084,7 +1085,8 @@ export function initOrigamiStudio() {
     const uiTool = getEffectiveDragTool();
     const worldDir = resolveWorldFoldDir(uiDir);
     const worldTool = (uiTool === 'valley' || uiTool === 'mountain') ? worldDir : uiTool;
-    const worldScope = resolveWorldLayerScope(state.freeLayerScope);
+    const effUiScope = (state.freeLayerScope === 'all' && state.dragAutoFlap) ? 'top' : state.freeLayerScope;
+    const worldScope = resolveWorldLayerScope(effUiScope);
     const isBack = uiDir === 'mountain';
     const toolNamesEn = { valley: 'Valley Fold', mountain: 'Mountain Fold', precrease: isBack ? 'Back Pre-crease' : 'Pre-crease', pleat: isBack ? 'Back Pleat Fold' : 'Pleat Fold' };
     const toolNamesKo = { valley: '앞면(계곡) 접기', mountain: '뒷면(산) 접기', precrease: isBack ? '뒷면 접었다 펴기' : '접었다 펴기', pleat: isBack ? '뒷면 계단 접기' : '계단 접기' };
@@ -1099,8 +1101,8 @@ export function initOrigamiStudio() {
       side,
       angleDeg: state.freeAngle,
       layerScope: worldScope,
-      targetLayer: state.freeLayerScope === 'top' ? state.dragPickedLayer : null,
-      seedPoint: state.freeLayerScope !== 'all' ? [state.dragStart.x, state.dragStart.y] : null,
+      targetLayer: effUiScope === 'top' ? state.dragPickedLayer : null,
+      seedPoint: effUiScope !== 'all' ? [state.dragStart.x, state.dragStart.y] : null,
       offset: state.freePleatOffset,
       labelEn: `${toolNamesEn[uiTool]}${sufEn}`,
       labelKo: `${toolNamesKo[uiTool]}${sufKo}`,
@@ -1115,6 +1117,21 @@ export function initOrigamiStudio() {
     // Real-time 3D preview angle follows drag distance & snaps close to finished when locked on target!
     const liveScale = Math.max(0.32, paperBounds.radius * 1.1);
     state.dragLiveT = snapTarget ? 0.88 : Math.min(0.84, 0.25 + (dLen / liveScale) * 0.62);
+  }
+
+  function isRaisedInteriorFlapSnap(snap) {
+    if (!snap || (snap.kind !== 'vertex' && snap.kind !== 'midpoint')) return false;
+    const faces = state.compiledPlanar?.finalState?.faces;
+    if (!faces || faces.length <= 1) return false;
+    let gMin = Infinity, gMax = -Infinity;
+    for (const f of faces) {
+      if (f.layer < gMin) gMin = f.layer;
+      if (f.layer > gMax) gMax = f.layer;
+    }
+    if (gMax - gMin < 0.5) return false;
+    return isViewingBackSide()
+      ? (snap.maxLayer < gMax - 0.05)
+      : (snap.minLayer > gMin + 0.05);
   }
 
   function computeFreePreviewFaces() {
@@ -1196,6 +1213,7 @@ export function initOrigamiStudio() {
         state.dragShiftFlip = !!e.shiftKey;
         state.dragAltFree = !!e.altKey;
         state.dragPickedLayer = pickFrontMostLayerAt(x, y, snap, w, h);
+        state.dragAutoFlap = state.freeLayerScope === 'all' && isRaisedInteriorFlapSnap(snap);
         state.dragCancelZone = false;
         state.lastSnapId = '';
         state.dragStart = startPt;

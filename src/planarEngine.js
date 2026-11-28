@@ -108,9 +108,37 @@ function facesShareUVEdge(fA, fB) {
 }
 
 /**
+ * Returns true if two faces share a UV crease edge whose 3D segment extends
+ * strictly onto movingSide — meaning they are physically hinged together as a
+ * multi-layer folded tab (e.g. a 3-layer paper airplane nose lock-tab).
+ */
+function facesShareMovingUVEdge(fA, fB, planeOrigin, planeNormal, movingSide) {
+  if (!fA.uvs || !fB.uvs) return false;
+  const eps = 3.5e-3;
+  const uvEq = (a, b) => Math.hypot(a.u - b.u, a.v - b.v) < eps;
+  const nA = fA.uvs.length, nB = fB.uvs.length;
+  for (let i = 0; i < nA; i++) {
+    const a1 = fA.uvs[i], a2 = fA.uvs[(i + 1) % nA];
+    if (Math.hypot(a2.u - a1.u, a2.v - a1.v) < 4e-3) continue;
+    const p1 = fA.pts[i], p2 = fA.pts[(i + 1) % nA];
+    const d1 = dot(sub(p1, planeOrigin), planeNormal) * movingSide;
+    const d2 = dot(sub(p2, planeOrigin), planeNormal) * movingSide;
+    if (d1 <= 0.025 && d2 <= 0.025) continue;
+    for (let j = 0; j < nB; j++) {
+      const b1 = fB.uvs[j], b2 = fB.uvs[(j + 1) % nB];
+      if ((uvEq(a1, b2) && uvEq(a2, b1)) || (uvEq(a1, b1) && uvEq(a2, b2))) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
  * Determine which faces are eligible to move given layerScope ('all'|'top'|'bottom'),
  * optional explicit targetLayerOverride (picked flap layer), and optional seedPoint
- * (isolates ONLY the UV-connected continuous flap containing the grabbed point).
+ * (isolates ONLY the UV-connected continuous flap — including any physically joined
+ * layers of a multi-layer folded tab — without dragging the untouched base sheet).
  */
 function filterLayerEligible(faces, movingSide, planeOrigin, planeNormal, layerScope, targetLayerOverride = null, seedPoint = null) {
   if (!layerScope || layerScope === 'all') {
@@ -118,8 +146,11 @@ function filterLayerEligible(faces, movingSide, planeOrigin, planeNormal, layerS
   }
   // Find faces that have at least one vertex strictly on movingSide
   const candidateIdx = [];
+  let gMinLayer = Infinity, gMaxLayer = -Infinity;
   for (let i = 0; i < faces.length; i++) {
     const f = faces[i];
+    if (f.layer < gMinLayer) gMinLayer = f.layer;
+    if (f.layer > gMaxLayer) gMaxLayer = f.layer;
     let hasMoving = false;
     for (const p of f.pts) {
       const d = dot(sub(p, planeOrigin), planeNormal) * movingSide;
@@ -154,9 +185,9 @@ function filterLayerEligible(faces, movingSide, planeOrigin, planeNormal, layerS
     }
   }
 
-  // If a grab seedPoint is provided, isolate ONLY the UV-connected flap island on targetLayer
-  // containing that seedPoint (so sibling flaps on the same height never get accidentally sliced!)
-  if (seedPoint && eligible.size > 1) {
+  // If a grab seedPoint is provided, isolate ONLY the UV-connected flap island containing
+  // that seedPoint (plus any sub-layers physically hinged to it on movingSide, excluding the base sheet).
+  if (seedPoint && eligible.size > 0) {
     const sx = seedPoint[0], sy = seedPoint[1];
     const layerIndices = [];
     for (let i = 0; i < faces.length; i++) {
@@ -200,10 +231,14 @@ function filterLayerEligible(faces, movingSide, planeOrigin, planeNormal, layerS
       seeds = [bestSeed];
     }
     if (seeds.length > 0) {
+      const candidateSet = new Set(candidateIdx);
+      const excludeBottomBase = layerScope === 'top' && targetLayer > gMinLayer + 0.05;
+      const excludeTopBase = layerScope === 'bottom' && targetLayer < gMaxLayer - 0.05;
       const visited = new Set(seeds);
       const queue = [...seeds];
       while (queue.length > 0) {
         const cur = queue.shift();
+        // 1. Same-layer UV neighbors (keeps creased single-layer flaps intact)
         for (const nxt of layerIndices) {
           if (visited.has(nxt)) continue;
           if (facesShareUVEdge(faces[cur], faces[nxt])) {
@@ -211,10 +246,20 @@ function filterLayerEligible(faces, movingSide, planeOrigin, planeNormal, layerS
             queue.push(nxt);
           }
         }
+        // 2. Cross-layer UV neighbors hinged strictly on movingSide (keeps multi-layer folded tabs together!)
+        for (const nxt of candidateIdx) {
+          if (visited.has(nxt)) continue;
+          if (excludeBottomBase && faces[nxt].layer <= gMinLayer + 0.05) continue;
+          if (excludeTopBase && faces[nxt].layer >= gMaxLayer - 0.05) continue;
+          if (facesShareMovingUVEdge(faces[cur], faces[nxt], planeOrigin, planeNormal, movingSide)) {
+            visited.add(nxt);
+            queue.push(nxt);
+          }
+        }
       }
       const isolated = new Set();
-      for (const idx of eligible) {
-        if (visited.has(idx)) isolated.add(idx);
+      for (const idx of visited) {
+        if (candidateSet.has(idx)) isolated.add(idx);
       }
       if (isolated.size > 0) return isolated;
     }
@@ -664,11 +709,13 @@ export function compilePlanarStep(baseState, step) {
       layer: f.layer,
     }));
 
+    const isInwardSingle = (layerScope === 'top' && foldType === 'mountain')
+      || (layerScope === 'bottom' && foldType === 'valley');
     for (const f of moveFaces) {
       let layer = f.layer;
       if (!isPrecrease && foldProgress > 0.51 && angleDeg >= 165) {
         if (foldType === 'valley') {
-          if (layerScope !== 'all' && Number.isFinite(aboveMin)) {
+          if (isInwardSingle && Number.isFinite(aboveMin)) {
             const span = Math.max(1, moveMax - moveMin + 1);
             const frac = (moveMax - f.layer + 1) / (span + 1);
             layer = moveMax + (aboveMin - moveMax) * frac;
@@ -676,7 +723,7 @@ export function compilePlanarStep(baseState, step) {
             layer = maxAll + 1 + (moveMax - f.layer);
           }
         } else {
-          if (layerScope !== 'all' && Number.isFinite(belowMax)) {
+          if (isInwardSingle && Number.isFinite(belowMax)) {
             const span = Math.max(1, moveMax - moveMin + 1);
             const frac = (f.layer - moveMin + 1) / (span + 1);
             layer = moveMin - (moveMin - belowMax) * frac;
