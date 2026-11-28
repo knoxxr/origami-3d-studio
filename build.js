@@ -17,6 +17,7 @@ const moduleOrder = [
   'src/kinematicModels.js',
   'src/renderer3d.js',
   'src/i18n.js',
+  'src/paperAudio.js',
   'src/app.js',
 ];
 

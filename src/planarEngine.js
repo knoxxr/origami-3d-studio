@@ -344,12 +344,179 @@ function computeFaceHinge(pos, neg, movingPoly, p1, planeNormal, axis) {
   return { origin: p1, axis };
 }
 
+// ---------------------------------------------------------------------------
+// Physical paper bending: while a flap is mid-fold, real paper does not hinge
+// like sheet metal — it rolls over a soft cylindrical bend next to the crease
+// line which tightens into a sharp crease as the fold is pressed flat.
+// ---------------------------------------------------------------------------
+
+/** Peak bend radius as a fraction of the paper's half-size. */
+const BEND_RADIUS_FRAC = 0.075;
+/** Max faces the renderer should receive once bend strips are added. */
+const BEND_FACE_BUDGET = 340;
+
+/**
+ * Precompute the per-face bend frame (radial direction away from the hinge) for
+ * moving faces. Faces that are not lying flat (|n.z| < 0.995) stay rigid.
+ */
+function prepareBendFrames(moveFaces, defaultOrigin, defaultAxis, radialDir) {
+  let maxS = 0;
+  const frames = moveFaces.map(f => {
+    const origin = f.hingeOrigin || defaultOrigin;
+    const axis = f.hingeAxis || defaultAxis;
+    const n = polyNormal(f.pts);
+    if (Math.abs(n.z) < 0.995) return null;
+    // Radial direction: horizontal, perpendicular to the hinge, pointing into the moving side
+    let u = sub(radialDir, scale(axis, dot(radialDir, axis)));
+    u = v3(u.x, u.y, 0);
+    const ul = Math.hypot(u.x, u.y);
+    if (ul < 1e-6) return null;
+    u = scale(u, 1 / ul);
+    let fMax = 0;
+    for (const p of f.pts) {
+      const s = dot(sub(p, origin), u);
+      if (s > fMax) fMax = s;
+    }
+    if (fMax > maxS) maxS = fMax;
+    return { origin, axis, u, maxS: fMax };
+  });
+  return { frames, maxS };
+}
+
+/**
+ * Wrap a flat moving face around a cylinder of radius `r` tangent to the hinge.
+ * Arc length is preserved (isometric up to chord subdivision), so the flap's far
+ * region continues straight at the full rotation angle `ang` beyond the bend.
+ * Returns the replacement face list (bend strips + straight remainder).
+ */
+function bendFaceAroundHinge(face, frame, ang, r, segs, layer) {
+  const absAng = Math.abs(ang);
+  const sgn = ang >= 0 ? 1 : -1;
+  const { origin: H, axis, u } = frame;
+  // w = direction the flap lifts toward at the hinge (u rotated +/-90deg about axis)
+  const w = scale(cross(axis, u), sgn);
+  const L = r * absAng;
+  const cosA = Math.cos(absAng), sinA = Math.sin(absAng);
+  const arcEnd = add(scale(u, r * sinA), scale(w, r * (1 - cosA)));
+  const tailDir = add(scale(u, cosA), scale(w, sinA));
+
+  const mapPoint = (p) => {
+    const d = sub(p, H);
+    const a = dot(d, axis);
+    const s = dot(d, u);
+    const rest = sub(sub(d, scale(axis, a)), scale(u, s));
+    let local, base;
+    if (s <= 0) {
+      local = 0;
+      base = scale(u, s);
+    } else if (s < L) {
+      local = s / r;
+      base = add(scale(u, r * Math.sin(local)), scale(w, r * (1 - Math.cos(local))));
+    } else {
+      local = absAng;
+      base = add(arcEnd, scale(tailDir, s - L));
+    }
+    const restRot = (Math.abs(rest.x) + Math.abs(rest.y) + Math.abs(rest.z)) > 1e-9
+      ? rotateAroundAxis(rest, v3(0, 0, 0), axis, sgn * local)
+      : rest;
+    return add(add(add(H, scale(axis, a)), base), restRot);
+  };
+
+  // Slice the face into strips at s = L*k/segs (k = 1..segs) parallel to the hinge
+  const cuts = [];
+  for (let k = 1; k <= segs; k++) cuts.push((L * k) / segs);
+  const pieces = [];
+  let remaining = { pts: face.pts, uvs: face.uvs };
+  for (let k = 0; k < cuts.length && remaining; k++) {
+    const { pos, neg } = splitPolygonByPlane(remaining.pts, remaining.uvs, add(H, scale(u, cuts[k])), u);
+    if (neg) pieces.push({ ...neg, strip: true });
+    remaining = pos;
+  }
+  if (remaining) pieces.push({ ...remaining, strip: false });
+
+  const onCut = (p) => {
+    const s = dot(sub(p, H), u);
+    for (let k = 0; k < cuts.length; k++) {
+      if (Math.abs(s - cuts[k]) < 2e-5) return true;
+    }
+    return false;
+  };
+
+  return pieces.map(pc => {
+    const n = pc.pts.length;
+    const smoothEdges = new Array(n);
+    for (let i = 0; i < n; i++) {
+      smoothEdges[i] = onCut(pc.pts[i]) && onCut(pc.pts[(i + 1) % n]);
+    }
+    return {
+      pts: pc.pts.map(mapPoint),
+      uvs: pc.uvs,
+      layer,
+      smoothEdges,
+      bendStrip: pc.strip,
+      bent: true,
+    };
+  });
+}
+
+/**
+ * Bend radius used for a flap at a given fold progress (exported so direct-drag
+ * interaction can compensate for the bend and keep the grabbed corner under the finger).
+ */
+export function estimateBendRadius(foldProgress, absTargetAng, maxS, paperHalf = 1) {
+  const p = Math.max(0, Math.min(1, foldProgress));
+  const ang = absTargetAng * p;
+  if (ang < 0.05 || p >= 0.998) return 0;
+  const r = paperHalf * BEND_RADIUS_FRAC * Math.sin(Math.PI * p);
+  // Keep the bent zone a modest fraction of the flap so small flaps stay believable
+  return Math.max(0, Math.min(r, (maxS * 0.42) / ang));
+}
+
+/**
+ * Offset of a bent flap's far region relative to the rigid hinge rotation, in the
+ * hinge frame: returns { du, dw } (u = away from hinge in-plane, w = lift direction).
+ */
+export function bendTipOffset(ang, r) {
+  const a = Math.abs(ang);
+  return {
+    du: r * (Math.sin(a) - a * Math.cos(a)),
+    dw: r * (1 - Math.cos(a) - a * Math.sin(a)),
+  };
+}
+
+/**
+ * Decide the bend radius / strip count for the current fold progress.
+ * Returns null when the fold should be rendered rigidly (crisp crease).
+ */
+function resolveBend(opts, foldProgress, absTargetAng, bendInfo, totalFaces, moveCount, paperHalf) {
+  if (opts && opts.bend === false) return null;
+  if (!bendInfo || bendInfo.maxS <= 1e-4 || moveCount === 0) return null;
+  if (foldProgress <= 0.002 || foldProgress >= 0.998) return null;
+  const ang = absTargetAng * foldProgress;
+  if (ang < 0.05) return null;
+  const amount = opts && Number.isFinite(opts.bendAmount) ? opts.bendAmount : 1;
+  const r = estimateBendRadius(foldProgress, absTargetAng, bendInfo.maxS, paperHalf) * amount;
+  if (r * ang < 0.006) return null;
+  const budget = Math.floor((BEND_FACE_BUDGET - totalFaces) / Math.max(1, moveCount));
+  const segs = Math.min(Math.max(2, Math.ceil(ang / (Math.PI / 11))), 9, budget);
+  if (segs < 2) return null;
+  return { r, segs };
+}
+
 /**
  * Prepare a single planar step on a base PaperState, returning a fast evaluator
- * function(t in [0,1]) -> { faces, guides, creases } and the final end state.
+ * function(t in [0,1], opts?) -> { faces, guides, creases } and the final end state.
+ *
+ * opts.progress — explicit fold progress in [0,1] (linear in angle, no easing);
+ *                 used by direct-manipulation dragging so the flap tracks the finger.
+ * opts.bend     — false disables the soft cylindrical paper bend near the hinge.
  */
 export function compilePlanarStep(baseState, step) {
   const type = step.type;
+  const paperHalf = Math.max(0.2, Math.max(baseState.width || 2, baseState.height || 2) * 0.5);
+  const progressOf = (t, opts) => (opts && Number.isFinite(opts.progress)
+    ? Math.max(0, Math.min(1, opts.progress))
+    : easeInOutCubic(t));
 
   // 1. FLIP (Turn paper over 180 deg around Y or X axis)
   if (type === 'flip') {
@@ -437,7 +604,7 @@ export function compilePlanarStep(baseState, step) {
       const eligible = filterLayerEligible(workFaces, side, p1, planeNormal, sf.layerScope || 'all', sf.targetLayer ?? null, sf.seedPoint ?? null);
 
       guides.push({ p1, p2, type: fType });
-      foldInfos.push({ origin: p1, axis, targetAngle, fType, angleDeg });
+      foldInfos.push({ origin: p1, axis, targetAngle, fType, angleDeg, radialDir: scale(planeNormal, side) });
 
       const nextWork = [];
       for (let i = 0; i < workFaces.length; i++) {
@@ -473,11 +640,26 @@ export function compilePlanarStep(baseState, step) {
     const maxAll = Math.max(...workFaces.map(f => f.layer), 0);
     const minAll = Math.min(...workFaces.map(f => f.layer), 0);
 
-    const evaluate = (t) => {
-      const e = easeInOutCubic(t);
-      const faces = workFaces.map(f => {
+    // Per-face bend frames (each sub-fold bends around its own hinge)
+    const mfMoving = workFaces.filter(f => f.foldIdx !== -1);
+    const mfBendFrames = new Map();
+    let mfMaxS = 0;
+    foldInfos.forEach((info, fi) => {
+      const group = mfMoving.filter(f => f.foldIdx === fi);
+      const prep = prepareBendFrames(group, info.origin, info.axis, info.radialDir);
+      group.forEach((f, k) => mfBendFrames.set(f, prep.frames[k]));
+      if (prep.maxS > mfMaxS) mfMaxS = prep.maxS;
+    });
+    const mfAbsTarget = Math.max(0, ...foldInfos.map(info => Math.abs(info.targetAngle)));
+
+    const evaluate = (t, opts) => {
+      const e = progressOf(t, opts);
+      const bend = resolveBend(opts, e, mfAbsTarget, { maxS: mfMaxS }, workFaces.length, mfMoving.length, paperHalf);
+      const faces = [];
+      for (const f of workFaces) {
         if (f.foldIdx === -1) {
-          return { pts: f.pts, uvs: f.uvs, layer: f.layer };
+          faces.push({ pts: f.pts, uvs: f.uvs, layer: f.layer });
+          continue;
         }
         const info = foldInfos[f.foldIdx];
         const ang = info.targetAngle * e;
@@ -487,14 +669,22 @@ export function compilePlanarStep(baseState, step) {
             ? maxAll + 1 + (maxAll - f.layer)
             : minAll - 1 - (f.layer - minAll);
         }
+        const frame = bend ? mfBendFrames.get(f) : null;
+        if (frame) {
+          const r = Math.min(bend.r, (frame.maxS * 0.42) / Math.max(0.05, Math.abs(ang)));
+          if (r * Math.abs(ang) >= 0.006) {
+            for (const bf of bendFaceAroundHinge(f, frame, ang, r, bend.segs, layer)) faces.push(bf);
+            continue;
+          }
+        }
         const hOrigin = f.hingeOrigin || info.origin;
         const hAxis = f.hingeAxis || info.axis;
-        return {
+        faces.push({
           pts: f.pts.map(p => rotateAroundAxis(p, hOrigin, hAxis, ang)),
           uvs: f.uvs,
           layer,
-        };
-      });
+        });
+      }
       return {
         faces,
         creases: [...baseState.creases, ...addedCreases],
@@ -502,7 +692,7 @@ export function compilePlanarStep(baseState, step) {
       };
     };
 
-    const finalEval = evaluate(1.0);
+    const finalEval = evaluate(1.0, { progress: 1, bend: false });
     const endState = {
       faces: finalEval.faces.map(f => ({
         pts: f.pts.map(p => ({
@@ -577,8 +767,8 @@ export function compilePlanarStep(baseState, step) {
       { p1: q1, p2: q2, type: secondType },
     ];
 
-    const evaluate = (t) => {
-      const e = easeInOutCubic(t);
+    const evaluate = (t, opts) => {
+      const e = progressOf(t, opts);
       const a1 = targetAng1 * e;
       const a2 = targetAng2 * e;
       const q1Moved = rotateAroundAxis(q1, p1, axis, a1);
@@ -617,7 +807,7 @@ export function compilePlanarStep(baseState, step) {
       };
     };
 
-    const endEval = evaluate(1.0);
+    const endEval = evaluate(1.0, { progress: 1 });
     const endState = {
       faces: endEval.faces.map(f => ({
         pts: f.pts.map(p => ({ x: p.x, y: p.y, z: Math.abs(p.z) < 1e-4 ? 0 : p.z })),
@@ -690,10 +880,14 @@ export function compilePlanarStep(baseState, step) {
   }
 
   const guides = [{ p1, p2, type: step.creaseType || foldType }];
+  const bendPrep = prepareBendFrames(moveFaces, p1, axis, scale(planeNormal, side));
+  const absTargetAngle = Math.abs(targetAngle);
 
-  const evaluate = (t) => {
+  const evaluate = (t, opts) => {
     let foldProgress;
-    if (isPrecrease) {
+    if (opts && Number.isFinite(opts.progress)) {
+      foldProgress = Math.max(0, Math.min(1, opts.progress));
+    } else if (isPrecrease) {
       // Fold smoothly to peak at t = 0.52, hold briefly, then unfold back to 0
       if (t < 0.48) foldProgress = easeInOutCubic(t / 0.48);
       else if (t < 0.58) foldProgress = 1.0;
@@ -711,7 +905,9 @@ export function compilePlanarStep(baseState, step) {
 
     const isInwardSingle = (layerScope === 'top' && foldType === 'mountain')
       || (layerScope === 'bottom' && foldType === 'valley');
-    for (const f of moveFaces) {
+    const bend = resolveBend(opts, foldProgress, absTargetAngle, bendPrep, stayFaces.length + moveFaces.length, moveFaces.length, paperHalf);
+    for (let mi = 0; mi < moveFaces.length; mi++) {
+      const f = moveFaces[mi];
       let layer = f.layer;
       if (!isPrecrease && foldProgress > 0.51 && angleDeg >= 165) {
         if (foldType === 'valley') {
@@ -730,6 +926,15 @@ export function compilePlanarStep(baseState, step) {
           } else {
             layer = minAll - 1 - (f.layer - moveMin);
           }
+        }
+      }
+      const frame = bend ? bendPrep.frames[mi] : null;
+      if (frame) {
+        const r = Math.min(bend.r, (frame.maxS * 0.42) / Math.max(0.05, Math.abs(ang)));
+        if (r * Math.abs(ang) >= 0.006) {
+          const bentFaces = bendFaceAroundHinge(f, frame, ang, r, bend.segs, layer);
+          for (const bf of bentFaces) outFaces.push(bf);
+          continue;
         }
       }
       const hOrigin = f.hingeOrigin || p1;
@@ -763,7 +968,7 @@ export function compilePlanarStep(baseState, step) {
       rotationDeg: baseState.rotationDeg,
     };
   } else {
-    const endEval = evaluate(1.0);
+    const endEval = evaluate(1.0, { progress: 1, bend: false });
     endState = {
       faces: endEval.faces.map(f => ({
         pts: f.pts.map(p => ({
@@ -812,6 +1017,7 @@ function applyRigidOpsToFrame(frame, ops) {
   }
   return {
     faces: frame.faces.map(f => ({
+      ...f,
       pts: f.pts.map(p => applyRigidOpsToPoint(p, ops)),
       uvs: f.uvs,
       layer: f.layer * flipSign,
@@ -846,16 +1052,20 @@ function buildEndStateFromFaces(faces, baseState) {
 }
 
 function compileUnfoldEntry(curState, entry) {
-  const evaluate = (t) => {
+  // opts.progress here is the UNFOLD progress (0 = still folded, 1 = fully opened)
+  const evaluate = (t, opts) => {
     const u = Math.max(0, Math.min(1, 1 - t));
-    const raw = applyRigidOpsToFrame(entry.compiled.evaluate(u), entry.postRigids);
+    const innerOpts = opts && Number.isFinite(opts.progress)
+      ? { ...opts, progress: 1 - Math.max(0, Math.min(1, opts.progress)) }
+      : opts;
+    const raw = applyRigidOpsToFrame(entry.compiled.evaluate(u, innerOpts), entry.postRigids);
     return {
       faces: raw.faces,
       creases: curState.creases,
       guides: raw.guides,
     };
   };
-  const endEval = evaluate(1.0);
+  const endEval = evaluate(1.0, { progress: 1, bend: false });
   const endState = buildEndStateFromFaces(endEval.faces, curState);
   return { evaluate, endState };
 }
@@ -898,37 +1108,45 @@ function compileUnfoldAllEntries(curState, stackEntries) {
  * pull a folded corner/edge back outward to unfold it intuitively in 3D.
  */
 function computeUnfoldHint(curState, entry) {
-  const f0 = applyRigidOpsToFrame(entry.compiled.evaluate(0), entry.postRigids).faces;
-  const f1 = applyRigidOpsToFrame(entry.compiled.evaluate(1), entry.postRigids).faces;
+  const rigid = { bend: false };
+  const f0 = applyRigidOpsToFrame(entry.compiled.evaluate(0, { ...rigid, progress: 0 }), entry.postRigids).faces;
+  const f1 = applyRigidOpsToFrame(entry.compiled.evaluate(1, { ...rigid, progress: 1 }), entry.postRigids).faces;
+  const fMid = applyRigidOpsToFrame(entry.compiled.evaluate(0.5, { ...rigid, progress: 0.5 }), entry.postRigids).faces;
   const candidates = [];
   let maxDist = 0;
 
-  const count = Math.min(f0.length, f1.length);
+  const count = Math.min(f0.length, f1.length, fMid.length);
   for (let i = 0; i < count; i++) {
     const pts0 = f0[i].pts;
     const pts1 = f1[i].pts;
-    const n = Math.min(pts0.length, pts1.length);
+    const ptsM = fMid[i].pts;
+    const n = Math.min(pts0.length, pts1.length, ptsM.length);
     for (let j = 0; j < n; j++) {
       const a0 = pts0[j];
       const a1 = pts1[j];
+      const aM = ptsM[j];
       const d = Math.hypot(a1.x - a0.x, a1.y - a0.y, (a1.z || 0) - (a0.z || 0));
       if (d > 0.16) {
         if (d > maxDist) maxDist = d;
         candidates.push({
           folded: v3(a1.x, a1.y, a1.z || 0),
           unfolded: v3(a0.x, a0.y, a0.z || 0),
+          mid: v3(aM.x, aM.y, aM.z || 0),
           dist: d,
         });
       }
       // Also include edge midpoints so dragging the middle of a folded edge works too
-      const b0 = pts0[(j + 1) % n];
-      const b1 = pts1[(j + 1) % n];
+      const k = (j + 1) % n;
+      const b0 = pts0[k];
+      const b1 = pts1[k];
+      const bM = ptsM[k];
       const m0 = v3((a0.x + b0.x) * 0.5, (a0.y + b0.y) * 0.5, ((a0.z || 0) + (b0.z || 0)) * 0.5);
       const m1 = v3((a1.x + b1.x) * 0.5, (a1.y + b1.y) * 0.5, ((a1.z || 0) + (b1.z || 0)) * 0.5);
+      const mM = v3((aM.x + bM.x) * 0.5, (aM.y + bM.y) * 0.5, ((aM.z || 0) + (bM.z || 0)) * 0.5);
       const dm = Math.hypot(m1.x - m0.x, m1.y - m0.y, m1.z - m0.z);
       if (dm > 0.16) {
         if (dm > maxDist) maxDist = dm;
-        candidates.push({ folded: m1, unfolded: m0, dist: dm });
+        candidates.push({ folded: m1, unfolded: m0, mid: mM, dist: dm });
       }
     }
   }

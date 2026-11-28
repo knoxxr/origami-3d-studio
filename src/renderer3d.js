@@ -25,6 +25,151 @@ function clamp255(v) {
   return Math.max(0, Math.min(255, Math.round(v)));
 }
 
+// ---------------------------------------------------------------------------
+// Washi / kami paper fibre texture (procedural, tileable, neutral-gray so it
+// modulates any paper colour through a soft-light blend).
+// ---------------------------------------------------------------------------
+const PAPER_TEX_SIZE = 256;
+const PAPER_TEX_REPEAT = 3.2; // tiles across one paper edge
+let paperTexCanvas = null;
+const paperPatternCache = new WeakMap();
+
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function createTexCanvas(size) {
+  if (typeof OffscreenCanvas !== 'undefined') return new OffscreenCanvas(size, size);
+  if (typeof document !== 'undefined') {
+    const c = document.createElement('canvas');
+    c.width = size; c.height = size;
+    return c;
+  }
+  return null;
+}
+
+function buildPaperTexture() {
+  const N = PAPER_TEX_SIZE;
+  const c = createTexCanvas(N);
+  if (!c) return null;
+  const g = c.getContext('2d');
+  if (!g) return null;
+  const rnd = mulberry32(0x5eed0f);
+
+  // Low-frequency cloudy mottling (pulp density variation), wrapped for seamless tiling
+  g.fillStyle = 'rgb(128,128,128)';
+  g.fillRect(0, 0, N, N);
+  for (let i = 0; i < 18; i++) {
+    const x = rnd() * N, y = rnd() * N, rad = 50 + rnd() * 70;
+    const light = rnd() > 0.5;
+    const a = 0.018 + rnd() * 0.03;
+    for (let ox = -N; ox <= N; ox += N) {
+      for (let oy = -N; oy <= N; oy += N) {
+        const gr = g.createRadialGradient(x + ox, y + oy, 0, x + ox, y + oy, rad);
+        gr.addColorStop(0, light ? `rgba(255,255,255,${a})` : `rgba(0,0,0,${a})`);
+        gr.addColorStop(1, 'rgba(128,128,128,0)');
+        g.fillStyle = gr;
+        g.fillRect(x + ox - rad, y + oy - rad, rad * 2, rad * 2);
+      }
+    }
+  }
+
+  // Fine per-pixel grain
+  const img = g.getImageData(0, 0, N, N);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const n = (rnd() - 0.5) * 16;
+    d[i] = Math.max(0, Math.min(255, d[i] + n));
+    d[i + 1] = Math.max(0, Math.min(255, d[i + 1] + n));
+    d[i + 2] = Math.max(0, Math.min(255, d[i + 2] + n));
+    d[i + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+
+  // Long soft fibres (kozo-style), drawn with wrap-around so the tile is seamless
+  g.lineCap = 'round';
+  for (let i = 0; i < 120; i++) {
+    const x = rnd() * N, y = rnd() * N;
+    const ang = rnd() * Math.PI * 2;
+    const L = 6 + rnd() * 26;
+    const bendAmt = (rnd() - 0.5) * L * 0.22;
+    const ex = x + Math.cos(ang) * L, ey = y + Math.sin(ang) * L;
+    const cx = (x + ex) * 0.5 - Math.sin(ang) * bendAmt;
+    const cy = (y + ey) * 0.5 + Math.cos(ang) * bendAmt;
+    const light = rnd() > 0.38;
+    g.strokeStyle = light ? `rgba(255,255,255,${0.07 + rnd() * 0.12})` : `rgba(40,30,20,${0.04 + rnd() * 0.06})`;
+    g.lineWidth = 0.45 + rnd() * 0.7;
+    for (let ox = -N; ox <= N; ox += N) {
+      for (let oy = -N; oy <= N; oy += N) {
+        g.beginPath();
+        g.moveTo(x + ox, y + oy);
+        g.quadraticCurveTo(cx + ox, cy + oy, ex + ox, ey + oy);
+        g.stroke();
+      }
+    }
+  }
+  return c;
+}
+
+function getPaperPattern(ctx) {
+  if (paperPatternCache.has(ctx)) return paperPatternCache.get(ctx);
+  let pattern = null;
+  try {
+    if (!paperTexCanvas) paperTexCanvas = buildPaperTexture();
+    if (paperTexCanvas) {
+      pattern = ctx.createPattern(paperTexCanvas, 'repeat');
+      if (pattern && typeof pattern.setTransform !== 'function') pattern = null;
+    }
+  } catch {
+    pattern = null;
+  }
+  paperPatternCache.set(ctx, pattern);
+  return pattern;
+}
+
+/**
+ * Affine map from paper UV-texture space to screen space for one face so the
+ * fibre texture sticks to the paper (folds, flips and orbits carry it along).
+ */
+function faceTextureMatrix(face, scrPts) {
+  const uvs = face.uvs;
+  if (!uvs || uvs.length !== scrPts.length || uvs.length < 3) return null;
+  const K = PAPER_TEX_SIZE * PAPER_TEX_REPEAT;
+  const X = (i) => uvs[i].u * K;
+  const Y = (i) => (1 - uvs[i].v) * K;
+  // Pick the most stable triangle (largest UV area) anchored at vertex 0
+  let i1 = 1, i2 = 2, best = 0;
+  for (let a = 1; a < uvs.length; a++) {
+    for (let b = a + 1; b < uvs.length; b++) {
+      const ar = Math.abs((X(a) - X(0)) * (Y(b) - Y(0)) - (X(b) - X(0)) * (Y(a) - Y(0)));
+      if (ar > best) { best = ar; i1 = a; i2 = b; }
+    }
+  }
+  if (best < 1e-3) return null;
+  const X0 = X(0), Y0 = Y(0);
+  const dX1 = X(i1) - X0, dY1 = Y(i1) - Y0, dX2 = X(i2) - X0, dY2 = Y(i2) - Y0;
+  const det = dX1 * dY2 - dX2 * dY1;
+  const s0 = scrPts[0], s1 = scrPts[i1], s2 = scrPts[i2];
+  const dx1 = s1.x - s0.x, dy1 = s1.y - s0.y, dx2 = s2.x - s0.x, dy2 = s2.y - s0.y;
+  const a = (dx1 * dY2 - dx2 * dY1) / det;
+  const c = (dX1 * dx2 - dX2 * dx1) / det;
+  const b = (dy1 * dY2 - dy2 * dY1) / det;
+  const d = (dX1 * dy2 - dX2 * dy1) / det;
+  const e = s0.x - a * X0 - c * Y0;
+  const f = s0.y - b * X0 - d * Y0;
+  if (![a, b, c, d, e, f].every(Number.isFinite)) return null;
+  // Reject near edge-on faces (texture would smear into streaks)
+  if (Math.abs(a * d - b * c) < 1e-5) return null;
+  return { a, b, c, d, e, f };
+}
+
 function buildStudioLights(cam) {
   const toCam = scale(cam.forward, -1);
   const camVec = (rx, uy, cz) => norm(add(add(scale(cam.right, rx), scale(cam.up, uy)), scale(toCam, cz)));
@@ -352,6 +497,9 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
     showShadow = true,
     freeOverlay = null,
     hudOverlay = null,
+    paperTexture = true,
+    flapShadows = true,
+    creaseFlash = null,
   } = options;
 
   const cam = buildCamera(camera.yaw, camera.pitch, camera.distance, camera.target || v3(0, 0, 0));
@@ -430,6 +578,8 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
   const renderItems = [];
   const layerThick = computeLayerThick(faces);
   const viewSideZ = (cam.eye.z - cam.target.z) >= 0 ? 1 : -1;
+  // Which side of the z = 0 table plane the eye is on (for lifted-flap shadow partitioning)
+  const eyeSideZ = cam.eye.z >= 0 ? 1 : -1;
   const studioLights = buildStudioLights(cam);
 
   for (let i = 0; i < faces.length; i++) {
@@ -479,6 +629,13 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
       studioLights
     );
 
+    let wzMin = Infinity, wzMax = -Infinity;
+    for (let k = 0; k < f.pts.length; k++) {
+      const z = (f.pts[k].z || 0) * eyeSideZ;
+      if (z < wzMin) wzMin = z;
+      if (z > wzMax) wzMax = z;
+    }
+
     renderItems.push({
       worldPts,
       worldNormal: normal,
@@ -495,6 +652,10 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
       isSpine: false,
       edgeKinds: new Array(f.pts.length).fill('fold'),
       origFace: f,
+      isBendStrip: !!f.bendStrip,
+      sideZMin: wzMin,
+      sideZMax: wzMax,
+      avgScale: scrPts.reduce((acc, sp) => acc + (sp.scale || 0), 0) / scrPts.length,
     });
   }
 
@@ -513,6 +674,11 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
       for (let e = 0; e < n; e++) {
         const j = (e + 1) % n;
         const u1 = f.uvs[e], u2 = f.uvs[j];
+        if (f.smoothEdges && f.smoothEdges[e]) {
+          // Internal seam of a smoothly bent paper strip: no line, no spine
+          item.edgeKinds[e] = 'smooth';
+          continue;
+        }
         if (isBoundaryUVEdge(u1, u2)) {
           item.edgeKinds[e] = 'border';
           continue;
@@ -602,6 +768,12 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
           const shaded = shadePaperColor(baseRgb, qNorm, qView, avgLayerKey, !outerItem.frontFacing, isDark, studioLights);
           const spineMinLayerKey = Math.min(itemA.layerKey, itemB.layerKey);
           const spineMaxLayerKey = Math.max(itemA.layerKey, itemB.layerKey);
+          let sqMin = Infinity, sqMax = -Infinity;
+          for (const qp of [a1, a2, b1, b2]) {
+            const z = (qp.z || 0) * eyeSideZ;
+            if (z < sqMin) sqMin = z;
+            if (z > sqMax) sqMax = z;
+          }
 
           spineItems.push({
             worldPts: qWorld,
@@ -620,6 +792,8 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
             frontFacing: outerItem.frontFacing,
             isSpine: true,
             origFace: outerItem.origFace,
+            sideZMin: sqMin,
+            sideZMax: sqMax,
           });
         }
       }
@@ -634,8 +808,34 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
     if (paperItems[i].layerKey < minPaperLayerKey) minPaperLayerKey = paperItems[i].layerKey;
   }
 
+  // 3c. Partition into "resting on the table plane" vs "lifted toward the viewer".
+  //     A face lying wholly on the camera side of z = 0 can never be hidden by a face
+  //     lying in z = 0, so drawing all resting paper first, then a physically projected
+  //     soft shadow of the lifted flaps, then the lifted flaps keeps depth order exact.
+  const ELEV_EPS = 0.004;
+  const ELEV_MIN = 0.018;
+  let drawSeq = sorted;
+  let liftedItems = [];
+  let liftedSet = null;
+  let restingFlat = [];
+  if (!showWireframe && flapShadows && Math.abs(cam.eye.z) > 0.2) {
+    const lifted = [];
+    const resting = [];
+    for (let i = 0; i < sorted.length; i++) {
+      const it = sorted[i];
+      const isLifted = it.sideZMin > -ELEV_EPS && it.sideZMax > ELEV_MIN;
+      if (isLifted) lifted.push(it); else resting.push(it);
+    }
+    restingFlat = resting.filter(it => !it.isSpine && it.sideZMax < ELEV_EPS && it.sideZMin > -ELEV_EPS);
+    if (lifted.length > 0 && restingFlat.length > 0) {
+      liftedItems = lifted;
+      liftedSet = new Set(lifted);
+      drawSeq = [...resting, { isShadowMarker: true }, ...lifted];
+    }
+  }
+
   // 4. Paint paper polygons back-to-front with unified inter-flap shadows,
-  //    subtle satin paper sheen, and physically distinct border/fold/crease edges.
+  //    subtle satin paper sheen, washi fibre texture, and physically distinct edges.
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
 
@@ -643,6 +843,84 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
     ctx.moveTo(pts[0].x, pts[0].y);
     for (let k = 1; k < pts.length; k++) ctx.lineTo(pts[k].x, pts[k].y);
     ctx.closePath();
+  };
+
+  const paperPattern = (!showWireframe && paperTexture) ? getPaperPattern(ctx) : null;
+  const MatrixCtor = typeof DOMMatrix !== 'undefined' ? DOMMatrix : null;
+
+  const drawFlapShadow = () => {
+    // Project every lifted face onto the table plane along the (softened) key light.
+    // Mostly overhead soft-box light with a hint of the key direction: the shadow sits
+    // under the flap and its penumbra widens with height, so it always reads on the sheet.
+    const key = studioLights.keyLight;
+    const L = norm(add(scale(key, 0.55), v3(0, 0, eyeSideZ)));
+    if (Math.abs(L.z) < 0.15) return;
+    const shadowPolys = [];
+    for (const it of liftedItems) {
+      if (it.isSpine) continue;
+      const src = it.worldPts;
+      const proj = [];
+      let ok = true;
+      let hSum = 0;
+      for (let k = 0; k < src.length; k++) {
+        const p = src[k];
+        const tt = p.z / L.z;
+        const sp = v3(p.x - L.x * tt, p.y - L.y * tt, 0);
+        const cp = worldToCamera(sp, cam);
+        if (cp.z <= 0.1) { ok = false; break; }
+        proj.push(projectPoint(cp, width, height));
+        hSum += Math.abs(p.z);
+      }
+      if (!ok) continue;
+      let area2 = 0;
+      for (let k = 0; k < proj.length; k++) {
+        const a = proj[k], b = proj[(k + 1) % proj.length];
+        area2 += a.x * b.y - b.x * a.y;
+      }
+      if (Math.abs(area2) < 0.5) continue;
+      if (area2 < 0) proj.reverse();
+      shadowPolys.push({ pts: proj, h: hSum / src.length, pxPerUnit: it.avgScale || 200 });
+    }
+    if (!shadowPolys.length) return;
+
+    const tf = typeof ctx.getTransform === 'function' ? ctx.getTransform() : { a: 1 };
+    const dpr = Math.abs(tf.a) || 1;
+    const OFF = 20000;
+
+    ctx.save();
+    ctx.beginPath();
+    for (const it of restingFlat) tracePoly(it.scrPts);
+    ctx.clip('nonzero');
+    ctx.fillStyle = '#000';
+    ctx.shadowOffsetX = OFF * dpr;
+    ctx.shadowOffsetY = 0;
+    // Higher parts of the flap cast wider, fainter penumbrae (soft-box physics).
+    // Bucket by height so stacked layers don't double-darken, one blur per bucket.
+    const buckets = new Map();
+    for (const sp of shadowPolys) {
+      const hPx = sp.h * sp.pxPerUnit;
+      const key = Math.min(7, Math.floor(hPx / 14));
+      let bk = buckets.get(key);
+      if (!bk) { bk = { polys: [], hPx: 0, n: 0 }; buckets.set(key, bk); }
+      bk.polys.push(sp.pts);
+      bk.hPx += hPx;
+      bk.n++;
+    }
+    for (const bk of buckets.values()) {
+      const hPx = bk.hPx / bk.n;
+      const blurCss = Math.max(2, Math.min(44, 2 + hPx * 0.6));
+      const alpha = Math.max(0.12, Math.min(0.34, 0.34 * Math.exp(-hPx / 190)));
+      ctx.shadowColor = isDark ? `rgba(0,0,0,${Math.min(0.6, alpha * 1.9)})` : `rgba(48,30,16,${alpha})`;
+      ctx.shadowBlur = blurCss * dpr;
+      ctx.beginPath();
+      for (const poly of bk.polys) {
+        ctx.moveTo(poly[0].x - OFF, poly[0].y);
+        for (let k = 1; k < poly.length; k++) ctx.lineTo(poly[k].x - OFF, poly[k].y);
+        ctx.closePath();
+      }
+      ctx.fill('nonzero');
+    }
+    ctx.restore();
   };
 
   if (showWireframe) {
@@ -660,8 +938,13 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
     }
   } else {
     let idx = 0;
-    while (idx < sorted.length) {
-      const first = sorted[idx];
+    while (idx < drawSeq.length) {
+      const first = drawSeq[idx];
+      if (first.isShadowMarker) {
+        if (showShadow) drawFlapShadow();
+        idx++;
+        continue;
+      }
       if (first.isSpine) {
         ctx.beginPath();
         tracePoly(first.scrPts);
@@ -674,9 +957,9 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
       // Group contiguous coplanar faces on the same layer into ONE flap island
       const firstLayerBin = Math.round(first.layerKey * 10);
       let end = idx + 1;
-      while (end < sorted.length) {
-        const nxt = sorted[end];
-        if (nxt.isSpine) break;
+      while (end < drawSeq.length) {
+        const nxt = drawSeq[end];
+        if (nxt.isSpine || nxt.isShadowMarker) break;
         if (Math.round(nxt.layerKey * 10) !== firstLayerBin) break;
         if (nxt.frontFacing !== first.frontFacing) break;
         if (dot(nxt.worldNormal, first.worldNormal) < 0.985) break;
@@ -684,13 +967,16 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
       }
 
       // Pass 4a: Unified inter-flap contact shadow (zero shadow across internal flat creases!)
+      //          Lifted flaps get a projected table shadow instead, and smoothly bent
+      //          strips never cast one onto their own neighbouring strips.
       const isRaised = first.layerKey > minPaperLayerKey + 0.05;
       const tilt = 1 - Math.abs(first.worldNormal.z);
       const isTilted = tilt > 0.04;
-      if (showShadow && (isRaised || isTilted)) {
+      const isLiftedGroup = !!liftedSet && liftedSet.has(first);
+      if (showShadow && (isRaised || isTilted) && !first.isBendStrip && !isLiftedGroup) {
         ctx.save();
         ctx.beginPath();
-        for (let r = idx; r < end; r++) tracePoly(sorted[r].scrPts);
+        for (let r = idx; r < end; r++) tracePoly(drawSeq[r].scrPts);
         ctx.shadowColor = isDark
           ? (isTilted ? 'rgba(0, 0, 0, 0.40)' : 'rgba(0, 0, 0, 0.30)')
           : (isTilted ? 'rgba(42, 28, 16, 0.20)' : 'rgba(42, 28, 16, 0.14)');
@@ -702,14 +988,14 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
         ctx.restore();
       }
 
-      // Pass 4b: Subtle satin key-light paper fill + anti-alias seam seal stroke
+      // Pass 4b: Subtle satin key-light paper fill + washi fibre texture + seam seal
       for (let r = idx; r < end; r++) {
-        const it = sorted[r];
+        const it = drawSeq[r];
         ctx.beginPath();
         tracePoly(it.scrPts);
         const spanW = it.maxX - it.minX;
         const spanH = it.maxY - it.minY;
-        if (spanW > 10 || spanH > 10) {
+        if (!it.isBendStrip && (spanW > 10 || spanH > 10)) {
           const grad = ctx.createLinearGradient(it.minX, it.minY, it.maxX, it.maxY);
           grad.addColorStop(0, it.shaded.fillLight);
           grad.addColorStop(0.52, it.shaded.fill);
@@ -721,15 +1007,32 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
         ctx.fill();
         // Micro same-color seal eliminates Canvas 2D anti-aliasing seams between coplanar triangles
         ctx.strokeStyle = it.shaded.fill;
-        ctx.lineWidth = 0.55;
+        ctx.lineWidth = it.isBendStrip ? 0.9 : 0.55;
         ctx.stroke();
+
+        if (paperPattern && MatrixCtor && (spanW > 3 || spanH > 3)) {
+          const m = faceTextureMatrix(it.origFace, it.scrPts);
+          if (m) {
+            try {
+              paperPattern.setTransform(new MatrixCtor([m.a, m.b, m.c, m.d, m.e, m.f]));
+              ctx.save();
+              ctx.globalCompositeOperation = 'soft-light';
+              ctx.globalAlpha = it.frontFacing ? 0.9 : 0.75;
+              ctx.fillStyle = paperPattern;
+              ctx.fill();
+              ctx.restore();
+            } catch {
+              // Pattern transforms unsupported: plain satin paper is fine
+            }
+          }
+        }
       }
 
       // Pass 4c: Physically distinct edge strokes (delicate embossed crease vs crisp border/fold)
       let hasCrease = false, hasBorder = false, hasFold = false;
       ctx.beginPath();
       for (let r = idx; r < end; r++) {
-        const it = sorted[r];
+        const it = drawSeq[r];
         const pts = it.scrPts;
         const kinds = it.edgeKinds;
         for (let e = 0; e < pts.length; e++) {
@@ -741,7 +1044,7 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
             ctx.lineTo(b.x, b.y);
           } else if (k === 'border') {
             hasBorder = true;
-          } else {
+          } else if (k === 'fold') {
             hasFold = true;
           }
         }
@@ -755,7 +1058,7 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
       if (hasBorder) {
         ctx.beginPath();
         for (let r = idx; r < end; r++) {
-          const it = sorted[r];
+          const it = drawSeq[r];
           const pts = it.scrPts;
           const kinds = it.edgeKinds;
           for (let e = 0; e < pts.length; e++) {
@@ -774,7 +1077,7 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
       if (hasFold) {
         ctx.beginPath();
         for (let r = idx; r < end; r++) {
-          const it = sorted[r];
+          const it = drawSeq[r];
           const pts = it.scrPts;
           const kinds = it.edgeKinds;
           for (let e = 0; e < pts.length; e++) {
@@ -797,6 +1100,51 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
 
       idx = end;
     }
+  }
+
+  // 4d. Fresh-crease "press" flash: a soft sheen that sweeps along a crease the
+  //     moment a fold is pressed flat (like running a fingernail along it).
+  if (creaseFlash && creaseFlash.segments && creaseFlash.segments.length) {
+    const ft = Math.max(0, Math.min(1, creaseFlash.t || 0));
+    ctx.save();
+    ctx.lineCap = 'round';
+    for (const seg of creaseFlash.segments) {
+      const c1 = worldToCamera(seg.p1, cam);
+      const c2 = worldToCamera(seg.p2, cam);
+      if (c1.z <= 0.1 || c2.z <= 0.1) continue;
+      const s1 = projectPoint(c1, width, height);
+      const s2 = projectPoint(c2, width, height);
+      if (Math.hypot(s2.x - s1.x, s2.y - s1.y) < 4) continue;
+      // Pressed crease darkening that fades in and stays subtle
+      ctx.beginPath();
+      ctx.moveTo(s1.x, s1.y);
+      ctx.lineTo(s2.x, s2.y);
+      ctx.strokeStyle = isDark ? `rgba(0,0,0,${0.35 * (1 - ft)})` : `rgba(60,35,20,${0.22 * (1 - ft)})`;
+      ctx.lineWidth = 2.2;
+      ctx.stroke();
+      // Travelling sheen
+      const grad = ctx.createLinearGradient(s1.x, s1.y, s2.x, s2.y);
+      const head = ft * 1.3 - 0.15;
+      const stops = [
+        [head - 0.28, 0],
+        [head - 0.08, 0.55],
+        [head, 0.95],
+        [head + 0.06, 0],
+      ];
+      for (const [pos, a] of stops) {
+        if (pos < 0 || pos > 1) continue;
+        grad.addColorStop(pos, `rgba(255,253,246,${a * (1 - ft * 0.5)})`);
+      }
+      grad.addColorStop(0, 'rgba(255,253,246,0)');
+      grad.addColorStop(1, 'rgba(255,253,246,0)');
+      ctx.beginPath();
+      ctx.moveTo(s1.x, s1.y);
+      ctx.lineTo(s2.x, s2.y);
+      ctx.strokeStyle = grad;
+      ctx.lineWidth = 3.2;
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   // 5. Active Fold Guide Lines (Yoshizawa-Randlett: blue dashed = valley, red dash-dot = mountain)
@@ -878,6 +1226,7 @@ function drawFreeStudioOverlay(ctx, width, height, cam, overlay, isDark, layerTh
     dragStart, dragCurrent, dragSnapLabel, dragCrease, dragMirrorCrease = null,
     mirrorAxisX = null, dragIsUnfold = false, unfoldGhost = null, unfoldGhostLabel = 'Unfold',
     dragCancelZone = false, dragCancelLabel = 'Release to cancel',
+    dragPointer = null, dragSnapped = false,
   } = overlay;
   ctx.save();
 
@@ -1018,11 +1367,11 @@ function drawFreeStudioOverlay(ctx, width, height, cam, overlay, isDark, layerTh
         const c1 = projectPoint(worldToCamera(cr.p1, cam), width, height);
         const c2 = projectPoint(worldToCamera(cr.p2, cam), width, height);
         ctx.save();
-        ctx.globalAlpha = alpha;
+        ctx.globalAlpha = alpha * 0.75;
         ctx.beginPath();
         ctx.setLineDash([]);
-        ctx.strokeStyle = 'rgba(255,255,255,0.85)';
-        ctx.lineWidth = 4.6;
+        ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+        ctx.lineWidth = 3.6;
         ctx.moveTo(c1.x, c1.y);
         ctx.lineTo(c2.x, c2.y);
         ctx.stroke();
@@ -1030,7 +1379,7 @@ function drawFreeStudioOverlay(ctx, width, height, cam, overlay, isDark, layerTh
         ctx.beginPath();
         ctx.setLineDash(isMountain ? [10, 4, 2, 4] : [8, 5]);
         ctx.strokeStyle = accent;
-        ctx.lineWidth = 2.6;
+        ctx.lineWidth = 1.8;
         ctx.moveTo(c1.x, c1.y);
         ctx.lineTo(c2.x, c2.y);
         ctx.stroke();
@@ -1042,46 +1391,47 @@ function drawFreeStudioOverlay(ctx, width, height, cam, overlay, isDark, layerTh
         drawCreasePair(dragMirrorCrease, 0.72);
       }
 
-      // Curved directional arrow from dragStart -> dragCurrent
+      // Physical drag cues: the grabbed corner itself follows the finger in 3D, so
+      // we only mark where it was lifted from and where it will land when released.
       const sA = projectPoint(worldToCamera(dragStart, cam), width, height);
       const sB = projectPoint(worldToCamera(dragCurrent, cam), width, height);
-      const mx = (sA.x + sB.x) * 0.5;
-      const my = (sA.y + sB.y) * 0.5;
-      const dx = sB.x - sA.x;
-      const dy = sB.y - sA.y;
-      const dLen = Math.hypot(dx, dy);
+      const sP = dragPointer || sB;
+      const dLen = Math.hypot(sB.x - sA.x, sB.y - sA.y);
 
-      if (!dragCancelZone && dLen > 14) {
-        const cx = mx - dy * 0.16;
-        const cy = my + dx * 0.16 - 12;
-
+      if (!dragCancelZone && !dragIsUnfold && dLen > 10) {
+        // Landing spot: soft "drop shadow" target where the corner will touch down
+        ctx.save();
+        const ringR = dragSnapped ? 11 : 8;
         ctx.beginPath();
-        ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-        ctx.lineWidth = 5;
-        ctx.moveTo(sA.x, sA.y);
-        ctx.quadraticCurveTo(cx, cy, sB.x, sB.y);
-        ctx.stroke();
-
-        ctx.beginPath();
-        ctx.strokeStyle = accent;
-        ctx.lineWidth = 2.8;
-        ctx.moveTo(sA.x, sA.y);
-        ctx.quadraticCurveTo(cx, cy, sB.x, sB.y);
-        ctx.stroke();
-
-        // Arrowhead at sB
-        const tangAng = Math.atan2(sB.y - cy, sB.x - cx);
-        const headLen = 11;
-        ctx.beginPath();
-        ctx.fillStyle = accent;
-        ctx.moveTo(sB.x, sB.y);
-        ctx.lineTo(sB.x - headLen * Math.cos(tangAng - 0.45), sB.y - headLen * Math.sin(tangAng - 0.45));
-        ctx.lineTo(sB.x - headLen * Math.cos(tangAng + 0.45), sB.y - headLen * Math.sin(tangAng + 0.45));
-        ctx.closePath();
+        ctx.arc(sB.x, sB.y, ringR + 5, 0, Math.PI * 2);
+        ctx.fillStyle = isMountain ? 'rgba(220, 38, 38, 0.10)' : 'rgba(37, 99, 235, 0.10)';
         ctx.fill();
+        ctx.beginPath();
+        ctx.arc(sB.x, sB.y, ringR, 0, Math.PI * 2);
+        ctx.setLineDash(dragSnapped ? [] : [3, 3]);
+        ctx.lineWidth = dragSnapped ? 2.4 : 1.6;
+        ctx.strokeStyle = accent;
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.arc(sB.x, sB.y, 2.4, 0, Math.PI * 2);
+        ctx.fillStyle = accent;
+        ctx.fill();
+        // Faint dotted guide from the fingertip down to the landing spot
+        if (Math.hypot(sP.x - sB.x, sP.y - sB.y) > 16) {
+          ctx.beginPath();
+          ctx.setLineDash([2, 4]);
+          ctx.lineWidth = 1.2;
+          ctx.strokeStyle = isDark ? 'rgba(255,255,255,0.45)' : 'rgba(60,50,40,0.38)';
+          ctx.moveTo(sP.x, sP.y);
+          ctx.lineTo(sB.x, sB.y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+        ctx.restore();
       }
 
-      // Start point dot (or amber cancel halo when dragged back to origin)
+      // Start point: hollow "lifted from here" ghost (or amber cancel halo when dragged back)
       if (dragCancelZone) {
         ctx.beginPath();
         ctx.arc(sA.x, sA.y, 16, 0, Math.PI * 2);
@@ -1092,22 +1442,42 @@ function drawFreeStudioOverlay(ctx, width, height, cam, overlay, isDark, layerTh
         ctx.strokeStyle = '#d97706';
         ctx.stroke();
         ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.arc(sA.x, sA.y, 6, 0, Math.PI * 2);
+        ctx.fillStyle = '#d97706';
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      } else {
+        ctx.beginPath();
+        ctx.arc(sA.x, sA.y, 4.5, 0, Math.PI * 2);
+        ctx.setLineDash([2, 2.5]);
+        ctx.lineWidth = 1.4;
+        ctx.strokeStyle = dragIsUnfold ? unfoldAccent : (isDark ? 'rgba(255,255,255,0.6)' : 'rgba(80,60,45,0.55)');
+        ctx.stroke();
+        ctx.setLineDash([]);
       }
-      ctx.beginPath();
-      ctx.arc(sA.x, sA.y, 6, 0, Math.PI * 2);
-      ctx.fillStyle = dragCancelZone ? '#d97706' : (dragIsUnfold ? unfoldAccent : '#cf4436');
-      ctx.fill();
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 2;
-      ctx.stroke();
+
+      // Fingertip contact ring (pressure feel)
+      if (dragPointer && !dragCancelZone) {
+        ctx.beginPath();
+        ctx.arc(sP.x, sP.y, 13, 0, Math.PI * 2);
+        ctx.fillStyle = isDark ? 'rgba(255,255,255,0.07)' : 'rgba(30,20,10,0.06)';
+        ctx.fill();
+        ctx.lineWidth = 1.2;
+        ctx.strokeStyle = isDark ? 'rgba(255,255,255,0.35)' : 'rgba(30,20,10,0.22)';
+        ctx.stroke();
+      }
 
       // Badge near cursor (cancel badge OR magnetic snap label)
       const badgeText = dragCancelZone ? dragCancelLabel : dragSnapLabel;
       if (badgeText) {
         ctx.font = '600 11.5px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
         const tw = ctx.measureText(badgeText).width;
-        const bx = Math.min(width - tw - 22, Math.max(10, sB.x - tw * 0.5 - 8));
-        const by = Math.max(12, sB.y - 34);
+        const anchor = dragPointer || sB;
+        const bx = Math.min(width - tw - 22, Math.max(10, anchor.x - tw * 0.5 - 8));
+        const by = Math.max(12, anchor.y - 44);
         ctx.fillStyle = dragCancelZone
           ? 'rgba(180, 83, 9, 0.94)'
           : dragIsUnfold
