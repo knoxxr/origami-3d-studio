@@ -726,6 +726,12 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
           // Distinct layer or bent hinge -> true folded ridge
           itemA.edgeKinds[ea.ei] = 'fold';
           itemB.edgeKinds[eb.ei] = 'fold';
+          // Real paper wraps around a fold with a tiny rounded ridge: flag both sides
+          // (except while a flap is still softly bending, where the bend itself shows it)
+          if (!itemA.origFace.bent && !itemB.origFace.bent) {
+            (itemA.ridgeEdges || (itemA.ridgeEdges = []))[ea.ei] = true;
+            (itemB.ridgeEdges || (itemB.ridgeEdges = []))[eb.ei] = true;
+          }
 
           const a1 = ea.w1, a2 = ea.w2;
           const dz = Math.max(Math.abs(a1.z - b1.z), Math.abs(a2.z - b2.z));
@@ -847,6 +853,83 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
 
   const paperPattern = (!showWireframe && paperTexture) ? getPaperPattern(ctx) : null;
   const MatrixCtor = typeof DOMMatrix !== 'undefined' ? DOMMatrix : null;
+  const paperMaterial = !showWireframe && paperTexture;
+
+  // Screen-space direction toward the key light (for emboss lips & rim highlights)
+  const keyCam = worldToCamera(add(cam.eye, studioLights.keyLight), cam);
+  const keyLen = Math.hypot(keyCam.x, keyCam.y) || 1;
+  const lightDirX = keyCam.x / keyLen;
+  const lightDirY = -keyCam.y / keyLen;
+  const lightOffX = -lightDirX * 0.7;
+  const lightOffY = -lightDirY * 0.7;
+
+  const drawPaperEdgeShading = (it) => {
+    if (it.isSpine || it.origFace.bent) return;
+    const pts = it.scrPts;
+    const n = pts.length;
+    const kinds = it.edgeKinds;
+    const ridges = it.ridgeEdges;
+    let any = false;
+    for (let e = 0; e < n; e++) {
+      if ((ridges && ridges[e]) || kinds[e] === 'border') { any = true; break; }
+    }
+    if (!any) return;
+    let cx = 0, cy = 0;
+    for (let k = 0; k < n; k++) { cx += pts[k].x; cy += pts[k].y; }
+    cx /= n; cy /= n;
+    const pxPerUnit = it.avgScale || 200;
+    // Faces seen nearly edge-on get no bands (they would smear)
+    const facing = Math.abs(it.camNormal ? it.camNormal.z : 1);
+    if (facing < 0.25) return;
+    const ridgeW = Math.max(3, Math.min(13, pxPerUnit * 0.038)) * facing;
+    const rimW = Math.max(1.1, Math.min(3, pxPerUnit * 0.008)) * facing;
+    const hlRidge = isDark ? 0.14 : (it.frontFacing ? 0.30 : 0.42);
+    const shRidge = isDark ? 0.28 : 0.13;
+    const hlRim = isDark ? 0.10 : (it.frontFacing ? 0.22 : 0.30);
+
+    ctx.save();
+    ctx.beginPath();
+    tracePoly(pts);
+    ctx.clip();
+    for (let e = 0; e < n; e++) {
+      const isRidge = !!(ridges && ridges[e]);
+      const isRim = !isRidge && kinds[e] === 'border';
+      if (!isRidge && !isRim) continue;
+      const a = pts[e], b = pts[(e + 1) % n];
+      const ex = b.x - a.x, ey = b.y - a.y;
+      const el = Math.hypot(ex, ey);
+      if (el < 4) continue;
+      let nx = -ey / el, ny = ex / el;
+      const mx = (a.x + b.x) * 0.5, my = (a.y + b.y) * 0.5;
+      if ((cx - mx) * nx + (cy - my) * ny < 0) { nx = -nx; ny = -ny; }
+      const w = isRidge ? ridgeW : rimW;
+      const g = ctx.createLinearGradient(mx, my, mx + nx * w, my + ny * w);
+      if (isRidge) {
+        // Rounded ridge: catch-light, then the curve rolling away from the light, then flat
+        const facingLight = Math.max(0, nx * lightDirX + ny * lightDirY);
+        const hl = hlRidge * (0.55 + 0.45 * (1 - facingLight));
+        g.addColorStop(0, `rgba(255,252,244,${hl})`);
+        g.addColorStop(0.16, `rgba(255,252,244,${hl * 0.25})`);
+        g.addColorStop(0.42, isDark ? `rgba(0,0,0,${shRidge})` : `rgba(50,30,12,${shRidge})`);
+        g.addColorStop(1, 'rgba(50,30,12,0)');
+      } else {
+        // Cut-edge thickness rim, brighter on the edges facing the light
+        const towardLight = Math.max(0, -(nx * lightDirX + ny * lightDirY));
+        const a0 = hlRim * (0.45 + 0.55 * towardLight);
+        g.addColorStop(0, `rgba(255,253,248,${a0})`);
+        g.addColorStop(1, 'rgba(255,253,248,0)');
+      }
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.lineTo(b.x + nx * w, b.y + ny * w);
+      ctx.lineTo(a.x + nx * w, a.y + ny * w);
+      ctx.closePath();
+      ctx.fillStyle = g;
+      ctx.fill();
+    }
+    ctx.restore();
+  };
 
   const drawFlapShadow = () => {
     // Project every lifted face onto the table plane along the (softened) key light.
@@ -977,12 +1060,23 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
         ctx.save();
         ctx.beginPath();
         for (let r = idx; r < end; r++) tracePoly(drawSeq[r].scrPts);
+        // Stacked flaps never lie perfectly flat on real paper: a soft contact shadow
+        // plus a tighter occlusion line under the free edges sells the layer thickness.
+        const dprS = Math.abs(typeof ctx.getTransform === 'function' ? ctx.getTransform().a : 1) || 1;
         ctx.shadowColor = isDark
-          ? (isTilted ? 'rgba(0, 0, 0, 0.40)' : 'rgba(0, 0, 0, 0.30)')
-          : (isTilted ? 'rgba(42, 28, 16, 0.20)' : 'rgba(42, 28, 16, 0.14)');
-        ctx.shadowBlur = isTilted ? (4.4 + tilt * 6.4) : 3.6;
-        ctx.shadowOffsetX = isTilted ? (1.3 + tilt * 2.6) : 1.1;
-        ctx.shadowOffsetY = isTilted ? (1.9 + tilt * 3.6) : 1.6;
+          ? (isTilted ? 'rgba(0, 0, 0, 0.45)' : 'rgba(0, 0, 0, 0.40)')
+          : (isTilted ? 'rgba(42, 28, 16, 0.22)' : 'rgba(42, 28, 16, 0.22)');
+        ctx.shadowBlur = (isTilted ? (4.4 + tilt * 6.4) : 5.0) * dprS;
+        ctx.shadowOffsetX = (isTilted ? (1.3 + tilt * 2.6) : 1.2) * dprS;
+        ctx.shadowOffsetY = (isTilted ? (1.9 + tilt * 3.6) : 1.8) * dprS;
+        ctx.fillStyle = first.shaded.fill;
+        ctx.fill();
+        if (!isTilted) {
+          ctx.shadowColor = isDark ? 'rgba(0, 0, 0, 0.45)' : 'rgba(42, 28, 16, 0.20)';
+          ctx.shadowBlur = 1.4 * dprS;
+          ctx.shadowOffsetX = 0.5 * dprS;
+          ctx.shadowOffsetY = 0.8 * dprS;
+        }
         ctx.fillStyle = first.shaded.fill;
         ctx.fill();
         ctx.restore();
@@ -1028,6 +1122,17 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
         }
       }
 
+      // Pass 4b': Paper-material edge shading inside each face
+      //   - fold ridges: the sheet rolls over a hairline-radius bend, so a bright
+      //     catch-light sits right on the ridge and the surface darkens slightly as
+      //     it curves away before flattening out;
+      //   - cut edges: the paper's thickness catches a thin light rim.
+      if (paperMaterial) {
+        for (let r = idx; r < end; r++) {
+          drawPaperEdgeShading(drawSeq[r]);
+        }
+      }
+
       // Pass 4c: Physically distinct edge strokes (delicate embossed crease vs crisp border/fold)
       let hasCrease = false, hasBorder = false, hasFold = false;
       ctx.beginPath();
@@ -1050,9 +1155,18 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
         }
       }
       if (hasCrease) {
+        // Pressed-in crease memory: soft dark groove + a light lip offset toward the light
         ctx.strokeStyle = first.shaded.creaseStroke;
-        ctx.lineWidth = 0.65;
+        ctx.lineWidth = 0.9;
         ctx.stroke();
+        if (paperMaterial) {
+          ctx.save();
+          ctx.translate(lightOffX, lightOffY);
+          ctx.strokeStyle = isDark ? 'rgba(255,255,255,0.07)' : 'rgba(255,252,245,0.30)';
+          ctx.lineWidth = 0.7;
+          ctx.stroke();
+          ctx.restore();
+        }
       }
 
       if (hasBorder) {

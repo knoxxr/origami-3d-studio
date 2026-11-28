@@ -2763,7 +2763,38 @@ export function initOrigamiStudio() {
   document.querySelectorAll('[data-macro]').forEach(btn => btn.addEventListener('click', () => applyQuickMacro(btn.dataset.macro)));
   $('btn-undo').addEventListener('click', undoFreeStep);
   $('btn-redo').addEventListener('click', redoFreeStep);
-  $('btn-reset').addEventListener('click', resetFreeStudio);
+  // "New sheet": wipes every fold (no undo), so a non-empty work needs a second tap
+  let newSheetArmedUntil = 0;
+  let newSheetTimer = null;
+  function requestNewSheet() {
+    if (state.mode !== 'free') switchMode('free');
+    const hasWork = state.freeSteps.length > 0;
+    const now = performance.now();
+    if (hasWork && now > newSheetArmedUntil) {
+      newSheetArmedUntil = now + 3000;
+      $('qbtn-new')?.classList.add('confirming');
+      if ($('qbtn-new-lbl')) $('qbtn-new-lbl').textContent = t('quickNewConfirm');
+      $('btn-reset')?.classList.add('confirming');
+      showToast(t('toastNewConfirm'), 3000);
+      triggerHaptic(10);
+      if (newSheetTimer) clearTimeout(newSheetTimer);
+      newSheetTimer = setTimeout(disarmNewSheet, 3000);
+      return;
+    }
+    disarmNewSheet();
+    resetFreeStudio();
+    paperAudio.pickup();
+    showToast(t('toastNewSheet'), 1600);
+  }
+  function disarmNewSheet() {
+    newSheetArmedUntil = 0;
+    if (newSheetTimer) { clearTimeout(newSheetTimer); newSheetTimer = null; }
+    $('qbtn-new')?.classList.remove('confirming');
+    if ($('qbtn-new-lbl')) $('qbtn-new-lbl').textContent = t('quickNew');
+    $('btn-reset')?.classList.remove('confirming');
+  }
+  $('btn-reset').addEventListener('click', requestNewSheet);
+  if ($('qbtn-new')) $('qbtn-new').addEventListener('click', requestNewSheet);
 
   // Floating Quick-Action Rail controls (in Free Fold Canvas)
   if ($('qbtn-dir')) {
