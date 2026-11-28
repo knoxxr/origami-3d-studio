@@ -40,6 +40,8 @@ export function createInitialPaper(width = 2.0, height = 2.0, rotationDeg = 0) {
   return {
     faces,
     creases: [], // 2D crease lines in UV space: { u1, v1, u2, v2, type: 'valley'|'mountain' }
+    cuts: [], // 2D scissor-cut segments in UV space: { u1, v1, u2, v2 }
+    cutMasks: [], // UV polygons removed by scissors (applied when older folds are replayed)
     width,
     height,
     rotationDeg,
@@ -54,6 +56,8 @@ export function clonePaperState(state) {
       layer: f.layer,
     })),
     creases: state.creases.map(c => ({ ...c })),
+    cuts: (state.cuts || []).map(c => ({ ...c })),
+    cutMasks: state.cutMasks || [],
     width: state.width,
     height: state.height,
     rotationDeg: state.rotationDeg,
@@ -140,7 +144,7 @@ function facesShareMovingUVEdge(fA, fB, planeOrigin, planeNormal, movingSide) {
  * (isolates ONLY the UV-connected continuous flap — including any physically joined
  * layers of a multi-layer folded tab — without dragging the untouched base sheet).
  */
-function filterLayerEligible(faces, movingSide, planeOrigin, planeNormal, layerScope, targetLayerOverride = null, seedPoint = null) {
+function selectLayerEligible(faces, movingSide, planeOrigin, planeNormal, layerScope, targetLayerOverride = null, seedPoint = null) {
   if (!layerScope || layerScope === 'all') {
     return new Set(faces.map((_, i) => i));
   }
@@ -266,6 +270,147 @@ function filterLayerEligible(faces, movingSide, planeOrigin, planeNormal, layerS
   }
 
   return eligible;
+}
+
+// ---------------------------------------------------------------------------
+// Physical validity of partial (single-flap) folds.
+//
+// Folding the whole stack along a line is always possible. Folding only some
+// layers is possible only if the moving set:
+//   1. is not hinged (joined along an existing fold edge) to paper that stays
+//      behind on the moving side — otherwise that fold edge would have to TEAR;
+//   2. is not covered, on the side it swings toward, by paper that stays —
+//      otherwise the flap would have to pass THROUGH that paper.
+// We grow the requested set to the smallest set satisfying both, so the result
+// is always something real paper can do without scissors. Inward "tuck" folds
+// (top flap mountain-folded into its own pocket, bottom flap valley-folded) end
+// up in the gap next to themselves, so only rule 1 applies to them.
+// ---------------------------------------------------------------------------
+
+/** Part of a convex face lying strictly on the moving side of the crease plane (XY). */
+function movingSidePart(face, planeOrigin, planeNormal, movingSide) {
+  const n = scale(planeNormal, movingSide);
+  const o = add(planeOrigin, scale(n, 0.012));
+  const { pos } = splitPolygonByPlane(face.pts, face.uvs, o, n);
+  return pos ? pos.pts : null;
+}
+
+/**
+ * Length of a hinge (shared UV edge) between fA and fB that lies beyond the crease on the
+ * moving side. Paper bends a little, so slivers shorter than a few % of the sheet are not
+ * a real tear (they come from rounding in hand-authored crease coordinates).
+ */
+function movingHingeLength(fA, fB, planeOrigin, planeNormal, movingSide) {
+  if (!fA.uvs || !fB.uvs) return 0;
+  const eps = 3.5e-3;
+  const margin = 0.025;
+  const uvEq = (a, b) => Math.hypot(a.u - b.u, a.v - b.v) < eps;
+  const nA = fA.uvs.length, nB = fB.uvs.length;
+  let best = 0;
+  for (let i = 0; i < nA; i++) {
+    const a1 = fA.uvs[i], a2 = fA.uvs[(i + 1) % nA];
+    if (Math.hypot(a2.u - a1.u, a2.v - a1.v) < 4e-3) continue;
+    const p1 = fA.pts[i], p2 = fA.pts[(i + 1) % nA];
+    const d1 = dot(sub(p1, planeOrigin), planeNormal) * movingSide;
+    const d2 = dot(sub(p2, planeOrigin), planeNormal) * movingSide;
+    if (d1 <= margin && d2 <= margin) continue;
+    let shared = false;
+    for (let j = 0; j < nB && !shared; j++) {
+      const b1 = fB.uvs[j], b2 = fB.uvs[(j + 1) % nB];
+      shared = (uvEq(a1, b2) && uvEq(a2, b1)) || (uvEq(a1, b1) && uvEq(a2, b2));
+    }
+    if (!shared) continue;
+    const L = dist(p1, p2);
+    let frac;
+    if (d1 > margin && d2 > margin) frac = 1;
+    else {
+      const hi = Math.max(d1, d2), lo = Math.min(d1, d2);
+      frac = hi - lo > 1e-9 ? (hi - margin) / (hi - lo) : 0;
+    }
+    best = Math.max(best, L * frac);
+  }
+  return best;
+}
+
+/** Positive-area overlap of two convex polygons in XY (separating axis, with inset tolerance). */
+function convexOverlapXY(A, B, eps = 0.01) {
+  if (!A || !B || A.length < 3 || B.length < 3) return false;
+  for (const poly of [A, B]) {
+    const n = poly.length;
+    for (let i = 0; i < n; i++) {
+      const a = poly[i], b = poly[(i + 1) % n];
+      const ex = b.x - a.x, ey = b.y - a.y;
+      const L = Math.hypot(ex, ey);
+      if (L < 1e-6) continue;
+      const nx = -ey / L, ny = ex / L;
+      let minA = Infinity, maxA = -Infinity, minB = Infinity, maxB = -Infinity;
+      for (const p of A) { const d = p.x * nx + p.y * ny; if (d < minA) minA = d; if (d > maxA) maxA = d; }
+      for (const p of B) { const d = p.x * nx + p.y * ny; if (d < minB) minB = d; if (d > maxB) maxB = d; }
+      if (maxA <= minB + eps || maxB <= minA + eps) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Grow `selected` (indices of faces asked to move) until the fold is physically
+ * realisable without tearing or interpenetration. motion.upward: the flap swings
+ * toward +z (valley-type); motion.inward: tuck into the adjacent pocket.
+ * Returns { set, note } where note is '' | 'tear' | 'collide'.
+ */
+function closePhysicalFoldSet(faces, selected, movingSide, planeOrigin, planeNormal, motion) {
+  const set = new Set(selected);
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const f of faces) for (const p of f.pts) {
+    if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+  }
+  const minTear = Math.max(0.02, 0.025 * Math.hypot(maxX - minX, maxY - minY));
+  if (set.size === 0) return { set, note: '' };
+  // Faces with paper on the moving side are the only ones that could be affected
+  const parts = new Map();
+  const onMovingSide = [];
+  for (let i = 0; i < faces.length; i++) {
+    const part = movingSidePart(faces[i], planeOrigin, planeNormal, movingSide);
+    if (part) { parts.set(i, part); onMovingSide.push(i); }
+  }
+  let note = '';
+  let changed = true;
+  let guard = 0;
+  while (changed && guard++ < 64) {
+    changed = false;
+    for (const j of onMovingSide) {
+      if (set.has(j)) continue;
+      let pull = '';
+      for (const i of set) {
+        // 1. Hinged to a moving face along an edge that reaches the moving side -> must come along
+        if (movingHingeLength(faces[i], faces[j], planeOrigin, planeNormal, movingSide) > minTear) { pull = 'tear'; break; }
+        // 2. Stationary paper covering the moving flap on the side it swings toward -> would be pierced
+        if (!motion.inward) {
+          const blocks = motion.upward ? faces[j].layer > faces[i].layer + 0.05 : faces[j].layer < faces[i].layer - 0.05;
+          if (blocks && convexOverlapXY(parts.get(i), parts.get(j))) { pull = 'collide'; break; }
+        }
+      }
+      if (pull) {
+        set.add(j);
+        changed = true;
+        if (!note || pull === 'tear') note = pull;
+      }
+    }
+  }
+  return { set, note };
+}
+
+function filterLayerEligible(faces, movingSide, planeOrigin, planeNormal, layerScope, targetLayerOverride = null, seedPoint = null, motion = null, preFilter = null) {
+  let base = selectLayerEligible(faces, movingSide, planeOrigin, planeNormal, layerScope, targetLayerOverride, seedPoint);
+  if (preFilter) base = new Set([...base].filter(preFilter));
+  if (!layerScope || layerScope === 'all' || !motion) {
+    base.physicsNote = '';
+    return base;
+  }
+  const { set, note } = closePhysicalFoldSet(faces, base, movingSide, planeOrigin, planeNormal, motion);
+  set.physicsNote = note;
+  return set;
 }
 
 /**
@@ -511,7 +656,7 @@ function resolveBend(opts, foldProgress, absTargetAng, bendInfo, totalFaces, mov
  *                 used by direct-manipulation dragging so the flap tracks the finger.
  * opts.bend     — false disables the soft cylindrical paper bend near the hinge.
  */
-export function compilePlanarStep(baseState, step) {
+function compilePlanarStepRaw(baseState, step) {
   const type = step.type;
   const paperHalf = Math.max(0.2, Math.max(baseState.width || 2, baseState.height || 2) * 0.5);
   const progressOf = (t, opts) => (opts && Number.isFinite(opts.progress)
@@ -587,6 +732,7 @@ export function compilePlanarStep(baseState, step) {
     const addedCreases = [];
     const guides = [];
     const foldInfos = [];
+    let mfNote = '';
 
     subFolds.forEach((sf, fi) => {
       const p1 = v3(sf.p1[0], sf.p1[1], sf.p1[2] || 0);
@@ -601,7 +747,18 @@ export function compilePlanarStep(baseState, step) {
       const targetAngle = sf.rawAngleDeg !== undefined
         ? (sf.rawAngleDeg * Math.PI) / 180
         : ((fType === 'mountain' ? -1 : 1) * side) * (angleDeg * Math.PI) / 180;
-      const eligible = filterLayerEligible(workFaces, side, p1, planeNormal, sf.layerScope || 'all', sf.targetLayer ?? null, sf.seedPoint ?? null);
+      const sfScope = sf.layerScope || 'all';
+      // xFilter picks one half of a symmetric model BEFORE the physical closure, so the
+      // closure only grows from that half (and may still pull hinged paper across).
+      const xPre = sf.xFilter ? (i) => {
+        const c = polyCentroid(workFaces[i].pts);
+        return !((sf.xFilter === 'pos' && c.x < -1e-4) || (sf.xFilter === 'neg' && c.x > 1e-4));
+      } : null;
+      const eligible = filterLayerEligible(workFaces, side, p1, planeNormal, sfScope, sf.targetLayer ?? null, sf.seedPoint ?? null, {
+        upward: fType !== 'mountain',
+        inward: (sfScope === 'top' && fType === 'mountain') || (sfScope === 'bottom' && fType !== 'mountain'),
+      }, xPre);
+      if (eligible.physicsNote && !mfNote) mfNote = eligible.physicsNote;
 
       guides.push({ p1, p2, type: fType });
       foldInfos.push({ origin: p1, axis, targetAngle, fType, angleDeg, radialDir: scale(planeNormal, side) });
@@ -612,13 +769,6 @@ export function compilePlanarStep(baseState, step) {
         if (f.foldIdx !== -1 || !eligible.has(i)) {
           nextWork.push(f);
           continue;
-        }
-        if (sf.xFilter) {
-          const c = polyCentroid(f.pts);
-          if ((sf.xFilter === 'pos' && c.x < -1e-4) || (sf.xFilter === 'neg' && c.x > 1e-4)) {
-            nextWork.push(f);
-            continue;
-          }
         }
         const { pos, neg } = splitPolygonByPlane(f.pts, f.uvs, p1, planeNormal);
         const seg = extractCreaseSegmentUV(pos, neg, p1, planeNormal);
@@ -709,7 +859,7 @@ export function compilePlanarStep(baseState, step) {
       rotationDeg: baseState.rotationDeg,
     };
     compactLayers(endState.faces);
-    return { evaluate, endState };
+    return { evaluate, endState, physicsNote: mfNote };
   }
 
   // 4. PLEAT FOLD (Two parallel creases: Valley + Mountain simultaneously, front or back side)
@@ -731,7 +881,11 @@ export function compilePlanarStep(baseState, step) {
     const targetAng1 = firstSign * (angleDeg * Math.PI) / 180;
     const targetAng2 = -targetAng1; // second crease is opposite
 
-    const eligible = filterLayerEligible(baseState.faces, side, p1, planeNormal, step.layerScope || 'all', step.targetLayer ?? null, step.seedPoint ?? null);
+    const plScope = step.layerScope || 'all';
+    const eligible = filterLayerEligible(baseState.faces, side, p1, planeNormal, plScope, step.targetLayer ?? null, step.seedPoint ?? null, {
+      upward: !isBackPleat,
+      inward: (plScope === 'top' && isBackPleat) || (plScope === 'bottom' && !isBackPleat),
+    });
     const pieces = []; // group: 0 = stationary, 1 = middle strip, 2 = far region
     const addedCreases = [];
 
@@ -820,7 +974,7 @@ export function compilePlanarStep(baseState, step) {
       rotationDeg: baseState.rotationDeg,
     };
     compactLayers(endState.faces);
-    return { evaluate, endState };
+    return { evaluate, endState, physicsNote: eligible.physicsNote || '' };
   }
 
   // 5. VALLEY, MOUNTAIN, or PRECREASE (supports both front/valley and back/mountain directions)
@@ -836,7 +990,10 @@ export function compilePlanarStep(baseState, step) {
   const targetAngle = sign * (angleDeg * Math.PI) / 180;
 
   const layerScope = step.layerScope || 'all';
-  const eligible = filterLayerEligible(baseState.faces, side, p1, planeNormal, layerScope, step.targetLayer ?? null, step.seedPoint ?? null);
+  const eligible = filterLayerEligible(baseState.faces, side, p1, planeNormal, layerScope, step.targetLayer ?? null, step.seedPoint ?? null, {
+    upward: foldType !== 'mountain',
+    inward: (layerScope === 'top' && foldType === 'mountain') || (layerScope === 'bottom' && foldType !== 'mountain'),
+  });
 
   const stayFaces = [];
   const moveFaces = [];
@@ -987,7 +1144,199 @@ export function compilePlanarStep(baseState, step) {
     compactLayers(endState.faces);
   }
 
-  return { evaluate, endState };
+  return { evaluate, endState, physicsNote: eligible.physicsNote || '' };
+}
+
+// ---------------------------------------------------------------------------
+// Scissors: cut straight through every layer along a line and drop one side.
+// The removed paper is remembered as UV polygons ("cut masks") so that when an
+// earlier fold is replayed during unfolding, the cut-away paper stays gone —
+// fold, snip, unfold reveals the cut pattern (kirigami / paper snowflakes).
+// ---------------------------------------------------------------------------
+
+/** Split a face by a line in UV space, interpolating 3D points. left = cross > 0. */
+function splitFaceByUVLine(face, ax, ay, bx, by) {
+  const n = face.uvs.length;
+  const ex = bx - ax, ey = by - ay;
+  const d = face.uvs.map(uv => {
+    const v = ex * (uv.v - ay) - ey * (uv.u - ax);
+    return Math.abs(v) < 1e-9 ? 0 : v;
+  });
+  let hasL = false, hasR = false;
+  for (const v of d) { if (v > 0) hasL = true; if (v < 0) hasR = true; }
+  if (!hasR) return { left: face, right: null };
+  if (!hasL) return { left: null, right: face };
+  const L = { pts: [], uvs: [] }, R = { pts: [], uvs: [] };
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const pi = face.pts[i], ui = face.uvs[i];
+    if (d[i] >= 0) { L.pts.push({ ...pi }); L.uvs.push({ ...ui }); }
+    if (d[i] <= 0) { R.pts.push({ ...pi }); R.uvs.push({ ...ui }); }
+    if ((d[i] > 0 && d[j] < 0) || (d[i] < 0 && d[j] > 0)) {
+      const t = d[i] / (d[i] - d[j]);
+      const ip = { x: pi.x + (face.pts[j].x - pi.x) * t, y: pi.y + (face.pts[j].y - pi.y) * t, z: (pi.z || 0) + ((face.pts[j].z || 0) - (pi.z || 0)) * t };
+      const iu = { u: ui.u + (face.uvs[j].u - ui.u) * t, v: ui.v + (face.uvs[j].v - ui.v) * t };
+      L.pts.push(ip); L.uvs.push(iu);
+      R.pts.push({ ...ip }); R.uvs.push({ ...iu });
+    }
+  }
+  const ok = (P) => {
+    if (P.uvs.length < 3) return false;
+    let a = 0;
+    for (let i = 0; i < P.uvs.length; i++) {
+      const p = P.uvs[i], q = P.uvs[(i + 1) % P.uvs.length];
+      a += p.u * q.v - q.u * p.v;
+    }
+    return Math.abs(a) > 2e-8;
+  };
+  return {
+    left: ok(L) ? { ...face, pts: L.pts, uvs: L.uvs } : null,
+    right: ok(R) ? { ...face, pts: R.pts, uvs: R.uvs } : null,
+  };
+}
+
+function uvBounds(uvs) {
+  let a = Infinity, b = -Infinity, c = Infinity, d = -Infinity;
+  for (const p of uvs) { if (p.u < a) a = p.u; if (p.u > b) b = p.u; if (p.v < c) c = p.v; if (p.v > d) d = p.v; }
+  return { minU: a, maxU: b, minV: c, maxV: d };
+}
+
+/** Remove every cut-mask region (convex UV polygons) from a list of faces. */
+function applyCutMasks(faces, masks) {
+  if (!masks || masks.length === 0) return faces;
+  let cur = faces;
+  for (const mask of masks) {
+    const mb = mask.bounds;
+    const next = [];
+    for (const f of cur) {
+      const fb = uvBounds(f.uvs);
+      if (fb.maxU <= mb.minU + 1e-6 || fb.minU >= mb.maxU - 1e-6 || fb.maxV <= mb.minV + 1e-6 || fb.minV >= mb.maxV - 1e-6) {
+        next.push(f);
+        continue;
+      }
+      // Convex difference: peel off the part outside each mask edge, keep shrinking the rest
+      let remaining = f;
+      const m = mask.poly;
+      for (let k = 0; k < m.length && remaining; k++) {
+        const a = m[k], b = m[(k + 1) % m.length];
+        const { left, right } = splitFaceByUVLine(remaining, a.u, a.v, b.u, b.v);
+        if (right) next.push(right); // outside (mask is CCW, interior on the left)
+        remaining = left;
+      }
+      // whatever remains lies inside the mask: cut away
+    }
+    cur = next;
+  }
+  return cur;
+}
+
+function makeCutMask(uvs) {
+  let area = 0;
+  for (let i = 0; i < uvs.length; i++) {
+    const p = uvs[i], q = uvs[(i + 1) % uvs.length];
+    area += p.u * q.v - q.u * p.v;
+  }
+  const poly = (area < 0 ? uvs.slice().reverse() : uvs.slice()).map(p => ({ u: p.u, v: p.v }));
+  return { poly, bounds: uvBounds(poly) };
+}
+
+function withCutState(frame, state) {
+  return { ...frame, cuts: state.cuts || [] };
+}
+
+function compileCutStep(baseState, step) {
+  const p1 = v3(step.p1[0], step.p1[1], 0);
+  const p2 = v3(step.p2[0], step.p2[1], 0);
+  const axis = norm(sub(p2, p1));
+  const planeNormal = norm(cross(v3(0, 0, 1), axis));
+  const discard = step.side >= 0 ? 1 : -1;
+  const keepFaces = [];
+  const dropFaces = [];
+  const newCuts = [];
+  const newMasks = [];
+  for (const f of baseState.faces) {
+    const { pos, neg } = splitPolygonByPlane(f.pts, f.uvs, p1, planeNormal);
+    const seg = extractCreaseSegmentUV(pos, neg, p1, planeNormal);
+    if (seg) newCuts.push(seg);
+    const drop = discard > 0 ? pos : neg;
+    const keep = discard > 0 ? neg : pos;
+    if (keep) keepFaces.push({ pts: keep.pts, uvs: keep.uvs, layer: f.layer });
+    if (drop) {
+      dropFaces.push({ pts: drop.pts, uvs: drop.uvs, layer: f.layer });
+      newMasks.push(makeCutMask(drop.uvs));
+    }
+  }
+  const cuts = [...(baseState.cuts || []), ...newCuts];
+  const cutMasks = [...(baseState.cutMasks || []), ...newMasks];
+  const away = scale(planeNormal, discard);
+  const evaluate = (t) => {
+    const e = easeInOutCubic(t);
+    if (e >= 0.999) return { faces: keepFaces, creases: baseState.creases, cuts, guides: [] };
+    // The snipped piece slides away from the cut and drops out of the scene
+    const slide = e * 0.9;
+    const drop = -e * e * 0.6;
+    const moved = dropFaces.map(f => ({
+      ...f,
+      pts: f.pts.map(p => ({ x: p.x + away.x * slide, y: p.y + away.y * slide, z: (p.z || 0) + drop })),
+    }));
+    return {
+      faces: [...keepFaces, ...moved],
+      creases: baseState.creases,
+      cuts: e > 0.02 ? cuts : (baseState.cuts || []),
+      guides: [{ p1, p2, type: 'cut' }],
+    };
+  };
+  const endState = {
+    faces: keepFaces.map(f => ({ pts: f.pts.map(p => ({ ...p })), uvs: f.uvs.map(u => ({ ...u })), layer: f.layer })),
+    creases: baseState.creases.map(c => ({ ...c })),
+    cuts,
+    cutMasks,
+    width: baseState.width,
+    height: baseState.height,
+    rotationDeg: baseState.rotationDeg,
+  };
+  if (endState.faces.length) compactLayers(endState.faces);
+  return {
+    evaluate,
+    endState,
+    physicsNote: '',
+    cutInfo: { removedFaces: dropFaces.length, keptFaces: keepFaces.length },
+  };
+}
+
+/** Total paper area (UV units, all layers) on each side of a world-space line — for picking the scrap. */
+export function paperAreaBySide(faces, p1, p2) {
+  const a = v3(p1[0], p1[1], 0), b = v3(p2[0], p2[1], 0);
+  const axis = norm(sub(b, a));
+  const planeNormal = norm(cross(v3(0, 0, 1), axis));
+  let pos = 0, neg = 0;
+  const uvArea = (uvs) => {
+    let s = 0;
+    for (let i = 0; i < uvs.length; i++) { const p = uvs[i], q = uvs[(i + 1) % uvs.length]; s += p.u * q.v - q.u * p.v; }
+    return Math.abs(s) * 0.5;
+  };
+  for (const f of faces) {
+    const sp = splitPolygonByPlane(f.pts, f.uvs, a, planeNormal);
+    if (sp.pos) pos += uvArea(sp.pos.uvs);
+    if (sp.neg) neg += uvArea(sp.neg.uvs);
+  }
+  return { pos, neg };
+}
+
+/**
+ * Compile one planar step. Wraps the folding kernel so every frame and end state
+ * carries the scissor-cut bookkeeping (cut edges + removed-paper masks).
+ */
+export function compilePlanarStep(baseState, step) {
+  if (step.type === 'cut') return compileCutStep(baseState, step);
+  const raw = compilePlanarStepRaw(baseState, step);
+  const cuts = baseState.cuts || [];
+  const cutMasks = baseState.cutMasks || [];
+  return {
+    ...raw,
+    evaluate: (t, opts) => ({ ...raw.evaluate(t, opts), cuts }),
+    endState: { ...raw.endState, cuts, cutMasks },
+  };
 }
 
 /**
@@ -1043,6 +1392,8 @@ function buildEndStateFromFaces(faces, baseState) {
       layer: f.layer,
     })),
     creases: baseState.creases.map(c => ({ ...c })),
+    cuts: baseState.cuts || [],
+    cutMasks: baseState.cutMasks || [],
     width: baseState.width,
     height: baseState.height,
     rotationDeg: baseState.rotationDeg,
@@ -1060,8 +1411,9 @@ function compileUnfoldEntry(curState, entry) {
       : opts;
     const raw = applyRigidOpsToFrame(entry.compiled.evaluate(u, innerOpts), entry.postRigids);
     return {
-      faces: raw.faces,
+      faces: applyCutMasks(raw.faces, curState.cutMasks),
       creases: curState.creases,
+      cuts: curState.cuts || [],
       guides: raw.guides,
     };
   };
@@ -1074,7 +1426,7 @@ function compileUnfoldAllEntries(curState, stackEntries) {
   if (!stackEntries.length) {
     const endState = clonePaperState(curState);
     return {
-      evaluate: () => ({ faces: curState.faces, creases: curState.creases, guides: [] }),
+      evaluate: () => ({ faces: curState.faces, creases: curState.creases, cuts: curState.cuts || [], guides: [] }),
       endState,
     };
   }
@@ -1085,7 +1437,7 @@ function compileUnfoldAllEntries(curState, stackEntries) {
     if (clamped >= 1) {
       const last = ordered[k - 1];
       const raw = applyRigidOpsToFrame(last.compiled.evaluate(0), last.postRigids);
-      return { faces: raw.faces, creases: curState.creases, guides: [] };
+      return { faces: applyCutMasks(raw.faces, curState.cutMasks), creases: curState.creases, cuts: curState.cuts || [], guides: [] };
     }
     const scaled = clamped * k;
     const idx = Math.min(k - 1, Math.floor(scaled));
@@ -1093,8 +1445,9 @@ function compileUnfoldAllEntries(curState, stackEntries) {
     const entry = ordered[idx];
     const raw = applyRigidOpsToFrame(entry.compiled.evaluate(1 - localT), entry.postRigids);
     return {
-      faces: raw.faces,
+      faces: applyCutMasks(raw.faces, curState.cutMasks),
       creases: curState.creases,
+      cuts: curState.cuts || [],
       guides: raw.guides,
     };
   };
@@ -1109,9 +1462,10 @@ function compileUnfoldAllEntries(curState, stackEntries) {
  */
 function computeUnfoldHint(curState, entry) {
   const rigid = { bend: false };
-  const f0 = applyRigidOpsToFrame(entry.compiled.evaluate(0, { ...rigid, progress: 0 }), entry.postRigids).faces;
-  const f1 = applyRigidOpsToFrame(entry.compiled.evaluate(1, { ...rigid, progress: 1 }), entry.postRigids).faces;
-  const fMid = applyRigidOpsToFrame(entry.compiled.evaluate(0.5, { ...rigid, progress: 0.5 }), entry.postRigids).faces;
+  const masks = curState.cutMasks;
+  const f0 = applyCutMasks(applyRigidOpsToFrame(entry.compiled.evaluate(0, { ...rigid, progress: 0 }), entry.postRigids).faces, masks);
+  const f1 = applyCutMasks(applyRigidOpsToFrame(entry.compiled.evaluate(1, { ...rigid, progress: 1 }), entry.postRigids).faces, masks);
+  const fMid = applyCutMasks(applyRigidOpsToFrame(entry.compiled.evaluate(0.5, { ...rigid, progress: 0.5 }), entry.postRigids).faces, masks);
   const candidates = [];
   let maxDist = 0;
 
@@ -1192,8 +1546,9 @@ export function compilePlanarTimeline(initialConfig, steps) {
         compiled = compileUnfoldEntry(cur, target);
       } else {
         const endState = clonePaperState(cur);
+        const frozen = cur;
         compiled = {
-          evaluate: () => ({ faces: cur.faces, creases: cur.creases, guides: [] }),
+          evaluate: () => ({ faces: frozen.faces, creases: frozen.creases, cuts: frozen.cuts || [], guides: [] }),
           endState,
         };
       }
@@ -1207,7 +1562,7 @@ export function compilePlanarTimeline(initialConfig, steps) {
         for (const entry of activeFoldStack) {
           entry.postRigids.push(op);
         }
-      } else if (step.type !== 'precrease') {
+      } else if (step.type !== 'precrease' && step.type !== 'cut') {
         activeFoldStack.push({ step, compiled, postRigids: [] });
       }
     }
@@ -1228,13 +1583,13 @@ export function compilePlanarTimeline(initialConfig, steps) {
     topUnfoldHint,
     evaluate(stepIdx, t) {
       if (compiledSteps.length === 0) {
-        return { faces: initState.faces, creases: initState.creases, guides: [] };
+        return { faces: initState.faces, creases: initState.creases, cuts: [], guides: [] };
       }
       const clampedIdx = Math.max(0, Math.min(compiledSteps.length - 1, stepIdx));
       const clampedT = Math.max(0, Math.min(1, t));
       if (clampedT >= 0.9999) {
         const end = compiledSteps[clampedIdx].endState;
-        return { faces: end.faces, creases: end.creases, guides: [] };
+        return { faces: end.faces, creases: end.creases, cuts: end.cuts || [], guides: [] };
       }
       return compiledSteps[clampedIdx].evaluate(clampedT);
     },

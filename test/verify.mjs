@@ -1,6 +1,6 @@
 import fs from 'fs';
 import { ORIGAMI_CATALOG } from '../src/kinematicModels.js';
-import { compilePlanarTimeline, computeSnapPoints, compilePlanarStep, createInitialPaper, estimateBendRadius, bendTipOffset } from '../src/planarEngine.js';
+import { compilePlanarTimeline, computeSnapPoints, compilePlanarStep, createInitialPaper, estimateBendRadius, bendTipOffset, paperAreaBySide } from '../src/planarEngine.js';
 import { GifEncoder } from '../src/gifEncoder.js';
 import { dist } from '../src/math3d.js';
 
@@ -289,7 +289,9 @@ console.log('\n=== 7. Verifying Double-Sided Folding (Front vs Back, Back Pleat,
     { type: 'valley', p1: [0, -1], p2: [0, 1], side: -1, angleDeg: 180 },
     { type: 'mountain', p1: [-1, 0], p2: [0, 0], side: 1, angleDeg: 180, layerScope: 'bottom' },
   ]);
-  assert(tlBottomLayer.finalState.faces.length === 3, `Expected 3 faces (top stays whole, bottom splits into 2), got ${tlBottomLayer.finalState.faces.length}`);
+  // The bottom layer is joined to the top layer by the x = 0 fold edge, which runs into the moving (y > 0)
+  // half — folding the bottom alone would TEAR that edge, so the top layer must come along (4 faces).
+  assert(tlBottomLayer.finalState.faces.length === 4, `Expected 4 faces (hinged top layer folds along instead of tearing), got ${tlBottomLayer.finalState.faces.length}`);
 
   // 5. 3D Hinge continuity: folding across a non-zero-Z pleat must NOT tear moving piece to -Z
   const tlPleatThenFold = compilePlanarTimeline({ width: 2, height: 2 }, [
@@ -338,7 +340,8 @@ console.log('\n=== 8. Verifying Partial Single-Flap Back-Folding, Pocket Tuck & 
         { p1: [0, -1], p2: [1, 0], side: -1, foldType: 'valley', angleDeg: 180 },
       ],
     },
-    { type: 'valley', p1: [0.45, 0], p2: [0, 0.45], side: -1, angleDeg: 180, layerScope: 'top', seedPoint: [0.05, 0.05] },
+    // Moving side contains the grabbed tip (as in the app, where the dragged point always moves)
+    { type: 'valley', p1: [0.45, 0], p2: [0, 0.45], side: 1, angleDeg: 180, layerScope: 'top', seedPoint: [0.05, 0.05] },
   ]);
   assert(tlBlintzOneFlap.finalState.faces.length === 6, `Expected 6 faces (1 base + 3 untouched sibling flaps + 2 split pieces of grabbed flap), got ${tlBlintzOneFlap.finalState.faces.length}`);
 
@@ -444,6 +447,96 @@ console.log('\n=== 9. Verifying Physical Paper Bending & Direct-Drag Progress Ov
   const mfr = mf.evaluate(0, { progress: 0.6 });
   assert(mfr.faces.filter(f => f.bent).length >= 4, 'mirror multiFold bends both flaps');
   console.log('  [OK] Progress override, cylindrical paper bend (near-isometric), tip-offset compensation & unfold arc verified');
+}
+
+
+console.log('\n=== 10. Verifying Physically Realisable Partial Folds (no tearing, no pass-through) ===');
+{
+  // Triangle (diagonal fold), then try to fold ONLY the top layer across the folded edge:
+  // the folded edge joins both layers on the moving side -> both must fold (no tear).
+  const tri = compilePlanarTimeline({ width: 2, height: 2 }, [{ type: 'valley', p1: [-1, 1], p2: [1, -1], side: 1, angleDeg: 180 }]);
+  const topOnly = compilePlanarStep(tri.finalState, { type: 'valley', p1: [-1, -0.2], p2: [1, -0.2], side: -1, angleDeg: 180, layerScope: 'top' });
+  const allLayers = compilePlanarStep(tri.finalState, { type: 'valley', p1: [-1, -0.2], p2: [1, -0.2], side: -1, angleDeg: 180, layerScope: 'all' });
+  assert(topOnly.physicsNote === 'tear', `top-only fold across a fold edge flagged as tear (got '${topOnly.physicsNote}')`);
+  assert(topOnly.endState.faces.length === allLayers.endState.faces.length, 'hinged layers fold together like the whole stack');
+
+  // Blintz flap folded from its hinge side would tear it off the base -> base and covering flaps come along
+  const blintz = { type: 'multiFold', folds: [
+    { p1: [0, 1], p2: [1, 0], side: 1, foldType: 'valley', angleDeg: 180 },
+    { p1: [-1, 0], p2: [0, 1], side: 1, foldType: 'valley', angleDeg: 180 },
+    { p1: [-1, 0], p2: [0, -1], side: -1, foldType: 'valley', angleDeg: 180 },
+    { p1: [0, -1], p2: [1, 0], side: -1, foldType: 'valley', angleDeg: 180 },
+  ] };
+  const bl = compilePlanarTimeline({ width: 2, height: 2 }, [blintz]);
+  const hingeSide = compilePlanarStep(bl.finalState, { type: 'valley', p1: [0.45, 0], p2: [0, 0.45], side: -1, angleDeg: 180, layerScope: 'top', seedPoint: [0.05, 0.05] });
+  assert(hingeSide.physicsNote === 'tear', 'folding a blintz flap from its hinge side is detected as a tear');
+  const tipSide = compilePlanarStep(bl.finalState, { type: 'valley', p1: [0.45, 0], p2: [0, 0.45], side: 1, angleDeg: 180, layerScope: 'top', seedPoint: [0.05, 0.05] });
+  assert(tipSide.physicsNote === '', 'folding a free flap tip needs no correction');
+
+  // Lower flap swinging up under a stationary covering flap would pierce it -> covering flap comes along
+  const stack = compilePlanarTimeline({ width: 2, height: 2 }, [
+    { type: 'valley', p1: [0, -1], p2: [0, 1], side: -1, angleDeg: 180 },
+  ]);
+  const under = compilePlanarStep(stack.finalState, { type: 'valley', p1: [0.5, -1], p2: [0.5, 1], side: 1, angleDeg: 180, layerScope: 'top', targetLayer: Math.min(...stack.finalState.faces.map(f => f.layer)) });
+  assert(under.physicsNote === 'tear' || under.physicsNote === 'collide', `bottom layer cannot swing up through the top layer (got '${under.physicsNote}')`);
+
+  console.log('  [OK] Tear / pass-through detection grows partial folds to the smallest physically foldable set');
+}
+
+console.log('\n=== 11. Verifying Scissors Cut (fold -> snip -> unfold keeps the cut pattern) ===');
+{
+  const uvArea = (faces) => faces.reduce((acc, f) => {
+    let a = 0;
+    for (let i = 0; i < f.uvs.length; i++) { const p = f.uvs[i], q = f.uvs[(i + 1) % f.uvs.length]; a += p.u * q.v - q.u * p.v; }
+    return acc + Math.abs(a) / 2;
+  }, 0);
+  const covers = (faces, x, y) => faces.some(f => {
+    let c = false; const P = f.pts;
+    for (let i = 0, j = P.length - 1; i < P.length; j = i++) {
+      if (((P[i].y > y) !== (P[j].y > y)) && (x < (P[j].x - P[i].x) * (y - P[i].y) / (P[j].y - P[i].y) + P[i].x)) c = !c;
+    }
+    return c;
+  });
+  const quarter = [
+    { type: 'valley', p1: [0, -1], p2: [0, 1], side: -1, angleDeg: 180 },
+    { type: 'valley', p1: [-1, 0], p2: [1, 0], side: -1, angleDeg: 180 },
+  ];
+  const folded = compilePlanarTimeline({ width: 2, height: 2 }, quarter).finalState;
+  // Folded stack sits in x in [-1,0], y in [0,1] with the sheet centre at (0,0): snip that corner off
+  const areas = paperAreaBySide(folded.faces, [-0.3, 0], [0, 0.3]);
+  assert(Math.abs(Math.min(areas.pos, areas.neg) - 0.045) < 1e-6, `paperAreaBySide finds the 4-layer corner scrap (${JSON.stringify(areas)})`);
+  const scrapSide = areas.pos < areas.neg ? 1 : -1;
+  const tl = compilePlanarTimeline({ width: 2, height: 2 }, [
+    ...quarter,
+    { type: 'cut', p1: [-0.3, 0], p2: [0, 0.3], side: scrapSide },
+    { type: 'unfoldAll' },
+  ]);
+  const afterCut = tl.compiledSteps[2].endState;
+  assert(afterCut.cuts.length === 4 && afterCut.cutMasks.length === 4, 'cut records one UV segment & mask per layer');
+  assert(Math.abs(uvArea(afterCut.faces) - 0.955) < 1e-6, 'cut removes exactly the scrap area');
+  assert(tl.activeFoldCount === 0, 'a cut is never treated as an unfoldable fold');
+  const opened = tl.finalState;
+  assert(Math.abs(uvArea(opened.faces) - 0.955) < 1e-6, 'unfolding keeps the cut-away paper gone');
+  assert(!covers(opened.faces, 0, 0), 'unfolded sheet has a hole in the centre');
+  assert(covers(opened.faces, 0.5, 0.5) && covers(opened.faces, -0.5, -0.5), 'rest of the sheet is intact');
+  assert(opened.faces.every(f => f.pts.every(p => Math.abs(p.z) < 1e-6)), 'unfolded cut sheet lies flat');
+  for (const tt of [0.25, 0.5, 0.75]) {
+    const fr = tl.evaluate(3, tt);
+    assert(Math.abs(uvArea(fr.faces) - 0.955) < 1e-6, `mid-unfold frame t=${tt} never shows cut paper`);
+    assert(fr.cuts && fr.cuts.length === 4, `mid-unfold frame t=${tt} carries cut edges`);
+  }
+  // Snip animation: scrap slides away, then is gone
+  const snip = tl.compiledSteps[2];
+  assert(snip.evaluate(0.5).faces.length > snip.endState.faces.length, 'cut animation shows the falling scrap');
+  // Unfold one fold at a time also keeps the hole
+  const tl2 = compilePlanarTimeline({ width: 2, height: 2 }, [
+    ...quarter,
+    { type: 'cut', p1: [-0.3, 0], p2: [0, 0.3], side: scrapSide },
+    { type: 'unfoldLast' },
+    { type: 'unfoldLast' },
+  ]);
+  assert(Math.abs(uvArea(tl2.finalState.faces) - 0.955) < 1e-6 && !covers(tl2.finalState.faces, 0, 0), 'step-by-step unfolding keeps the hole too');
+  console.log('  [OK] Scissors cut through all layers, cut masks survive unfold (kirigami), animation & bookkeeping verified');
 }
 
 console.log(`\nSUMMARY: ${passed} passed, ${failed} failed`);

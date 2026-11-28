@@ -137,6 +137,13 @@ export function createPaperAudio(isEnabled = () => true) {
       burst({ dur: 0.035, freq: 4200, q: 0.9, gain: 0.09 * k, type: 'highpass', attack: 0.001 });
       burst({ dur: 0.16, freq: 1900, q: 1.4, gain: 0.035 * k, offset: 0.03 });
     },
+    /** Scissors snip: two blades closing, then the scrap slipping away. */
+    snip() {
+      burst({ dur: 0.03, freq: 6200, q: 1.6, gain: 0.08, type: 'highpass', attack: 0.001 });
+      burst({ dur: 0.025, freq: 4800, q: 2.2, gain: 0.07, attack: 0.001, offset: 0.06 });
+      thump({ dur: 0.04, from: 320, to: 180, gain: 0.03, offset: 0.06 });
+      burst({ dur: 0.22, freq: 1800, q: 0.7, gain: 0.025, offset: 0.12 });
+    },
     /** Paper opening back up. */
     unfold() {
       burst({ dur: 0.2, freq: 1500, q: 0.8, gain: 0.04 });

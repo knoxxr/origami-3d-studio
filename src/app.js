@@ -5,8 +5,8 @@
 //           Mobile Bottom Sheet Drawer, Timeline Scrubber & Full-Process GIF
 // ============================================================================
 
-import { v3, sub, dot, cross, norm, screenToPlane, worldToCamera, projectPoint } from './math3d.js';
-import { compilePlanarTimeline, compilePlanarStep, computeSnapPoints, createInitialPaper, estimateBendRadius, bendTipOffset } from './planarEngine.js';
+import { v3, sub, dot, cross, norm, screenToPlane, worldToCamera, projectPoint, splitPolygonByPlane } from './math3d.js';
+import { compilePlanarTimeline, compilePlanarStep, computeSnapPoints, createInitialPaper, estimateBendRadius, bendTipOffset, paperAreaBySide } from './planarEngine.js';
 import { ORIGAMI_CATALOG, PAPER_PRESETS } from './kinematicModels.js';
 import { renderOrigami3D, renderCreasePattern2D, computeLayerThick, isScreenPointOccluded } from './renderer3d.js';
 import { GifEncoder } from './gifEncoder.js';
@@ -53,7 +53,7 @@ export function initOrigamiStudio() {
     freeRedo: [],
     freeTool: 'valley', // 'valley' | 'mountain' | 'precrease' | 'pleat'
     freeFoldDir: 'valley', // 'valley' (toward Front +Z) | 'mountain' (toward Back -Z)
-    freeInteractMode: 'drag', // 'drag' | 'line' | 'orbit'
+    freeInteractMode: 'drag', // 'drag' | 'line' | 'orbit' | 'cut'
     freeAngle: 180,
     freeLayerScope: 'all', // 'all' | 'top'
     freePleatOffset: 0.25,
@@ -98,6 +98,14 @@ export function initOrigamiStudio() {
     dragAngleSnap: 0, // 0 = none, 45 = diagonal (45°/135°), 90 = edge-aligned (0°/90°)
     settle: null,
     creaseFlash: null,
+    // Scissors cut gesture
+    cutActive: false,
+    cutStart: null,
+    cutCurrent: null,
+    cutFlip: false,
+    cutDiscardSide: 0,
+    cutPreviewFaces: null,
+    cutPointer: null,
     soundOn: true,
 
     // Compiled timeline cache
@@ -562,6 +570,12 @@ export function initOrigamiStudio() {
     state.dragUnfoldArc = null;
     state.dragLiveKey = '';
     state.dragAngleSnap = 0;
+    state.cutActive = false;
+    state.cutStart = null;
+    state.cutCurrent = null;
+    state.cutDiscardSide = 0;
+    state.cutPreviewFaces = null;
+    state.cutPointer = null;
   }
 
   // ---- Free Fold Actions ----
@@ -571,6 +585,10 @@ export function initOrigamiStudio() {
     state.freeRedo = [];
     clearInteractiveDraft();
     rebuildCompiledTimeline();
+    const lastCompiled = state.compiledPlanar?.compiledSteps?.[state.compiledPlanar.compiledSteps.length - 1];
+    if (lastCompiled?.physicsNote) {
+      showToast(t(lastCompiled.physicsNote === 'tear' ? 'toastPhysTear' : 'toastPhysCollide'), 3200);
+    }
     // A fold that was physically dragged & pressed by hand is already in place: no replay
     state.playPos = alreadyFolded
       ? state.freeSteps.length
@@ -586,7 +604,7 @@ export function initOrigamiStudio() {
     finishSettleNow();
     if (state.mode !== 'free' || !state.compiledPlanar || state.compiledPlanar.activeFoldCount === 0) return;
     if (isMobileViewport()) closeSheet();
-    const topStep = state.freeSteps.slice().reverse().find(s => !['unfoldLast', 'unfoldAll', 'precrease', 'flip', 'rotate'].includes(s.type));
+    const topStep = state.freeSteps.slice().reverse().find(s => !['unfoldLast', 'unfoldAll', 'precrease', 'flip', 'rotate', 'cut'].includes(s.type));
     const enLbl = topStep?.labelEn || '';
     const koLbl = topStep?.labelKo || topStep?.label || '';
     addFreeStep({
@@ -836,13 +854,14 @@ export function initOrigamiStudio() {
     return { x: e.clientX - rect.left, y: e.clientY - rect.top, w: rect.width, h: rect.height };
   }
 
-  function findNearestSnap(sx, sy, w, h, radiusPx = 28, excludePt = null, allowMinor = true, checkOcclusion = false) {
-    if (!lastCam || state.snapPoints.length === 0) return null;
+  /** All snap points within radiusPx of the screen point, best (lowest score) first. */
+  function findSnapCandidates(sx, sy, w, h, radiusPx = 28, excludePt = null, allowMinor = true, checkOcclusion = false) {
+    if (!lastCam || state.snapPoints.length === 0) return [];
     const faces = state.compiledPlanar?.finalState?.faces;
     const layerThick = computeLayerThick(faces);
     const viewSideZ = (lastCam.eye.z - lastCam.target.z) >= 0 ? 1 : -1;
     const paperItems = checkOcclusion ? (lastCam.paperItems || null) : null;
-    let best = null, bestScore = radiusPx;
+    const out = [];
     for (const sp of state.snapPoints) {
       if (!allowMinor && (sp.kind === 'quarter' || sp.kind === 'intersect')) continue;
       if (excludePt && Math.hypot(sp.x - excludePt.x, sp.y - excludePt.y) < 0.08) continue;
@@ -855,12 +874,15 @@ export function initOrigamiStudio() {
       // Slight preference for vertices/intersections/center over quarter points when close
       const bias = sp.kind === 'vertex' ? 0 : sp.kind === 'center' ? 1.5 : sp.kind === 'intersect' ? 2.0 : sp.kind === 'midpoint' ? 2.5 : 5.5;
       const score = d + bias;
-      if (score < bestScore) {
-        bestScore = score;
-        best = sp;
-      }
+      if (score < radiusPx) out.push({ sp, d, score });
     }
-    return best;
+    out.sort((a, b) => a.score - b.score);
+    return out;
+  }
+
+  function findNearestSnap(sx, sy, w, h, radiusPx = 28, excludePt = null, allowMinor = true, checkOcclusion = false) {
+    const c = findSnapCandidates(sx, sy, w, h, radiusPx, excludePt, allowMinor, checkOcclusion);
+    return c.length ? c[0].sp : null;
   }
 
   function pointInPoly2D(px, py, pts) {
@@ -1159,6 +1181,16 @@ export function initOrigamiStudio() {
     return { dir: v3(Math.cos(a), Math.sin(a), 0), kind };
   }
 
+  /** 45 / 90 when a crease is (within ~1.2°) at a multiple of 45° to the paper edge, else 0. */
+  function creaseAngleKind(fold) {
+    if (!fold) return 0;
+    const step = Math.PI / 4;
+    const ang = Math.atan2(fold.dir.y, fold.dir.x) - state.dragRefAngle;
+    const k = Math.round(ang / step);
+    if (Math.abs(ang - k * step) > (1.2 * Math.PI) / 180) return 0;
+    return (((k % 2) + 2) % 2) === 1 ? 45 : 90;
+  }
+
   function updateDirectDragFold(sx, sy, w, h) {
     if (!state.dragStart || !lastCam || !state.compiledPlanar) return;
     lastDragSx = sx; lastDragSy = sy; lastDragW = w; lastDragH = h;
@@ -1196,7 +1228,7 @@ export function initOrigamiStudio() {
           } else if (!snapped && state.lastSnapId === 'unfold-origin') {
             state.lastSnapId = '';
           }
-          const topStep = state.freeSteps.slice().reverse().find(s => !['unfoldLast', 'unfoldAll', 'precrease', 'flip', 'rotate'].includes(s.type));
+          const topStep = state.freeSteps.slice().reverse().find(s => !['unfoldLast', 'unfoldAll', 'precrease', 'flip', 'rotate', 'cut'].includes(s.type));
           const enLbl = topStep?.labelEn || '';
           const koLbl = topStep?.labelKo || topStep?.label || '';
           state.dragCancelZone = false;
@@ -1231,7 +1263,47 @@ export function initOrigamiStudio() {
     const uiTool = getEffectiveDragTool();
     const worldDir = resolveWorldFoldDir(uiDir);
     const liftSign = worldDir === 'mountain' ? -1 : 1;
-    const snapTarget = state.dragAltFree ? null : findNearestSnap(sx, sy, w, h, snapRadius, S, true);
+    const paperBounds = computePaperBounds(state.compiledPlanar.finalState.faces);
+    const groundDist = Math.hypot(rawPt.x - S.x, rawPt.y - S.y);
+    const minDrag = Math.max(0.035, Math.min(0.14, paperBounds.radius * 0.12));
+
+    // Where would the free (unsnapped) corner be? Needed to tell whether the hand is
+    // aiming for a 45° / edge-aligned crease before deciding between snap types.
+    const hMax = Math.max(0.12, paperBounds.radius * 0.75);
+    const hgt = liftSign * Math.min(hMax, state.dragLift * groundDist);
+    const fingerPt = screenToPlane(sx, sy, w, h, lastCam, v3(0, 0, hgt), v3(0, 0, 1)) || v3(rawPt.x, rawPt.y, hgt);
+    const freeP = v3(fingerPt.x, fingerPt.y, hgt);
+    const freeCrease = state.dragAltFree ? null : creaseFromTip(S, freeP);
+    const angSnap = freeCrease && groundDist >= minDrag ? snapCreaseDirection(freeCrease.dir) : null;
+
+    // Point-snap candidates vs angle snap. Folded models are dense with midpoints,
+    // intersections and quarter points, so a nearby point must not steal an intended
+    // 45° fold: while the hand aims at a snapped angle, only points that KEEP that
+    // angle win, unless the finger sits practically on top of a point.
+    const candidates = state.dragAltFree ? [] : findSnapCandidates(sx, sy, w, h, snapRadius, S, true);
+    let snapTarget = null;
+    let snapAngleKind = 0;
+    if (candidates.length) {
+      if (angSnap) {
+        const directHitPx = isMobileViewport() ? 12 : 9;
+        let aligned = null;
+        // Accept only points whose crease runs in the SAME locked direction the hand aims at
+        const cosTol = Math.cos((1.2 * Math.PI) / 180);
+        for (const c of candidates) {
+          const f = creaseFromTip(S, v3(c.sp.x, c.sp.y, 0));
+          if (f && Math.abs(f.dir.x * angSnap.dir.x + f.dir.y * angSnap.dir.y) > cosTol) {
+            aligned = c;
+            snapAngleKind = angSnap.kind;
+            break;
+          }
+        }
+        if (aligned) snapTarget = aligned.sp;
+        else if (candidates[0].d < directHitPx) snapTarget = candidates[0].sp;
+      } else {
+        snapTarget = candidates[0].sp;
+        snapAngleKind = creaseAngleKind(creaseFromTip(S, v3(snapTarget.x, snapTarget.y, 0)));
+      }
+    }
 
     const snapKeyMap = {
       vertex: 'snapVertex',
@@ -1241,8 +1313,8 @@ export function initOrigamiStudio() {
       quarter: 'snapQuarter',
     };
     const snapKey = snapTarget ? (snapKeyMap[snapTarget.kind] || 'snapMid') : '';
-    let snapLabelKey = snapKey;
-    state.dragSnapLabel = snapKey ? t(snapKey) : '';
+    const labelKeys = [];
+    if (snapKey) labelKeys.push(snapKey);
     state.dragSnapped = !!snapTarget;
 
     if (snapTarget) {
@@ -1256,12 +1328,10 @@ export function initOrigamiStudio() {
       state.lastSnapId = '';
     }
 
-    const paperBounds = computePaperBounds(state.compiledPlanar.finalState.faces);
-    const groundDist = Math.hypot(rawPt.x - S.x, rawPt.y - S.y);
-    const minDrag = Math.max(0.035, Math.min(0.14, paperBounds.radius * 0.12));
     const targetDist = snapTarget ? Math.hypot(snapTarget.x - S.x, snapTarget.y - S.y) : groundDist;
     if (targetDist < minDrag) {
       state.dragAngleSnap = 0;
+      state.dragSnapLabel = '';
       state.dragCancelZone = dragMoved;
       state.dragCurrent = rawPt;
       state.dragCrease = null;
@@ -1276,40 +1346,26 @@ export function initOrigamiStudio() {
     const targetRad = Math.max(0.2, (state.freeAngle * Math.PI) / 180);
     const paperHalf = getPaperHalf();
     let fold = null;
+    let newAngleKind = 0;
     if (snapTarget) {
       // Magnetic target: crease is the exact bisector; the corner hovers just above the target
       const Q = v3(snapTarget.x, snapTarget.y, 0);
-      state.dragAngleSnap = 0;
+      newAngleKind = snapAngleKind;
       fold = creaseFromTip(S, Q);
       if (fold) fold.theta = Math.PI - 2 * Math.atan(state.dragLift);
     } else {
-      // Free drag: corner sits under the finger at the current lift height
-      const hMax = Math.max(0.12, paperBounds.radius * 0.75);
-      const hgt = liftSign * Math.min(hMax, state.dragLift * groundDist);
-      const fingerPt = screenToPlane(sx, sy, w, h, lastCam, v3(0, 0, hgt), v3(0, 0, 1)) || v3(rawPt.x, rawPt.y, hgt);
-      let P = v3(fingerPt.x, fingerPt.y, hgt);
-      // Angle snap (45° corner folds, plus edge-aligned 0°/90°): lock the crease direction
-      // and keep the corner as close to the finger as that direction allows, by projecting
+      // Free drag: corner sits under the finger at the current lift height.
+      // Angle snap (45° corner folds, plus edge-aligned 0°/90°) locks the crease direction
+      // and keeps the corner as close to the finger as that direction allows, by projecting
       // the fingertip onto the plane the corner sweeps through (perpendicular to the crease).
-      let lockDir = null;
-      const raw = state.dragAltFree ? null : creaseFromTip(S, P);
-      const angSnap = raw ? snapCreaseDirection(raw.dir) : null;
-      if (angSnap) {
-        lockDir = angSnap.dir;
-        if (state.dragAngleSnap !== angSnap.kind) {
-          triggerHaptic(8);
-          paperAudio.snapTick();
-        }
-        state.dragAngleSnap = angSnap.kind;
-      } else {
-        state.dragAngleSnap = 0;
-      }
+      const lockDir = angSnap ? angSnap.dir : null;
+      newAngleKind = angSnap ? angSnap.kind : 0;
       const lockToDir = (X) => {
         if (!lockDir) return X;
         const along = (X.x - S.x) * lockDir.x + (X.y - S.y) * lockDir.y;
         return v3(X.x - lockDir.x * along, X.y - lockDir.y * along, X.z);
       };
-      P = lockToDir(P);
+      const P = lockToDir(freeP);
       // Compensate the soft paper bend so the bent flap's corner (not the rigid one) meets the finger
       let aim = P;
       for (let it = 0; it < 3; it++) {
@@ -1325,12 +1381,14 @@ export function initOrigamiStudio() {
         ));
       }
       fold = creaseFromTip(S, aim);
-      if (fold && state.dragAngleSnap) {
-        const angKey = state.dragAngleSnap === 45 ? 'snapAngle45' : 'snapAngle90';
-        state.dragSnapLabel = t(angKey);
-        snapLabelKey = angKey;
-      }
     }
+    if (newAngleKind && state.dragAngleSnap !== newAngleKind && !snapTarget) {
+      triggerHaptic(8);
+      paperAudio.snapTick();
+    }
+    state.dragAngleSnap = newAngleKind;
+    if (newAngleKind) labelKeys.push(newAngleKind === 45 ? 'snapAngle45' : 'snapAngle90');
+    state.dragSnapLabel = labelKeys.map(k => t(k)).join(' · ');
     if (!fold) return;
 
     const mid = fold.foot;
@@ -1349,8 +1407,8 @@ export function initOrigamiStudio() {
     const isBack = uiDir === 'mountain';
     const toolNamesEn = { valley: 'Valley Fold', mountain: 'Mountain Fold', precrease: isBack ? 'Back Pre-crease' : 'Pre-crease', pleat: isBack ? 'Back Pleat Fold' : 'Pleat Fold' };
     const toolNamesKo = { valley: '앞면(계곡) 접기', mountain: '뒷면(산) 접기', precrease: isBack ? '뒷면 접었다 펴기' : '접었다 펴기', pleat: isBack ? '뒷면 계단 접기' : '계단 접기' };
-    const sufEn = snapLabelKey ? ` · ${UI_STRINGS.en[snapLabelKey]}` : '';
-    const sufKo = snapLabelKey ? ` · ${UI_STRINGS.ko[snapLabelKey]}` : '';
+    const sufEn = labelKeys.map(k => ` · ${UI_STRINGS.en[k]}`).join('');
+    const sufKo = labelKeys.map(k => ` · ${UI_STRINGS.ko[k]}`).join('');
 
     const built = buildFoldStepWithMirror({
       toolType: worldTool,
@@ -1589,6 +1647,80 @@ export function initOrigamiStudio() {
     });
   }
 
+  // ---------------------------------------------------------------------------
+  // Scissors: snip straight through every layer; the smaller piece falls away
+  // (Shift keeps the smaller piece instead). Cut-away paper stays gone when the
+  // model is unfolded later, so fold → cut → unfold makes kirigami patterns.
+  // ---------------------------------------------------------------------------
+  function cutPointAt(sx, sy, w, h) {
+    const snap = findNearestSnap(sx, sy, w, h, isMobileViewport() ? 30 : 22, null, true);
+    if (snap) return v3(snap.x, snap.y, 0);
+    const raw = screenToPlane(sx, sy, w, h, lastCam, v3(0, 0, 0), v3(0, 0, 1));
+    return raw ? v3(raw.x, raw.y, 0) : null;
+  }
+
+  function updateCutPreview(sx, sy, w, h) {
+    if (!state.cutStart || !lastCam || !state.compiledPlanar) return;
+    const cur = cutPointAt(sx, sy, w, h);
+    if (!cur) return;
+    state.cutCurrent = cur;
+    state.cutPointer = { x: sx, y: sy };
+    const a = state.cutStart, b = cur;
+    if (Math.hypot(b.x - a.x, b.y - a.y) < 0.04) {
+      state.cutPreviewFaces = null;
+      state.cutDiscardSide = 0;
+      updateFreeBanner();
+      return;
+    }
+    const faces = state.compiledPlanar.finalState.faces;
+    const area = paperAreaBySide(faces, [a.x, a.y], [b.x, b.y]);
+    if (area.pos < 1e-5 || area.neg < 1e-5) {
+      state.cutPreviewFaces = null;
+      state.cutDiscardSide = 0;
+      updateFreeBanner();
+      return;
+    }
+    let side = area.pos <= area.neg ? 1 : -1;
+    if (state.cutFlip) side = -side;
+    state.cutDiscardSide = side;
+    const axis = norm(sub(b, a));
+    const planeNormal = norm(cross(v3(0, 0, 1), axis));
+    const preview = [];
+    for (const f of faces) {
+      const sp = splitPolygonByPlane(f.pts, f.uvs, a, planeNormal);
+      const part = side > 0 ? sp.pos : sp.neg;
+      if (part) preview.push({ pts: part.pts });
+    }
+    state.cutPreviewFaces = preview;
+    updateFreeBanner();
+  }
+
+  function commitCut() {
+    const a = state.cutStart, b = state.cutCurrent, side = state.cutDiscardSide;
+    const valid = dragMoved && a && b && side !== 0 && Math.hypot(b.x - a.x, b.y - a.y) >= 0.04;
+    clearInteractiveDraft();
+    if (!valid) {
+      updateFreeBanner();
+      return;
+    }
+    paperAudio.snip();
+    triggerHaptic([5, 20, 5]);
+    addFreeStep({
+      type: 'cut',
+      p1: [a.x, a.y],
+      p2: [b.x, b.y],
+      side,
+      label: 'Scissors Cut',
+      labelEn: 'Scissors Cut',
+      labelKo: '가위로 자르기',
+      technique: 'Cut',
+      techniqueEn: 'Cut',
+      techniqueKo: '자르기',
+      descEn: 'Snip straight through every layer and let the scrap fall away. Unfold later to reveal the cut pattern.',
+      descKo: '모든 겹을 한 번에 곧게 자르고 잘린 조각을 떼어냅니다. 나중에 펼치면 자른 무늬가 드러납니다.',
+    });
+  }
+
   function isRaisedInteriorFlapSnap(snap) {
     if (!snap || (snap.kind !== 'vertex' && snap.kind !== 'midpoint')) return false;
     const faces = state.compiledPlanar?.finalState?.faces;
@@ -1662,6 +1794,28 @@ export function initOrigamiStudio() {
     if (e.button === 1 || e.button === 2) {
       gestureMode = 'orbit';
       return;
+    }
+
+    // Scissors: a straight snip can start anywhere (even off the paper, like real scissors)
+    if (state.mode === 'free' && state.freeInteractMode === 'cut' && lastCam && state.compiledPlanar) {
+      if (state.playPos < state.freeSteps.length) {
+        state.playPos = state.freeSteps.length;
+        state.playing = false;
+        syncPlaybackControls();
+      }
+      const start = cutPointAt(x, y, w, h);
+      if (start) {
+        gestureMode = 'cut';
+        state.cutActive = true;
+        state.cutStart = start;
+        state.cutCurrent = start;
+        state.cutPointer = { x, y };
+        state.cutFlip = !!e.shiftKey;
+        state.cutPreviewFaces = null;
+        state.cutDiscardSide = 0;
+        updateFreeBanner();
+        return;
+      }
     }
 
     // Decide 1-finger gesture: Direct Drag-to-Fold/Unfold vs Orbit!
@@ -1773,6 +1927,14 @@ export function initOrigamiStudio() {
       return;
     }
 
+    // 2b. Scissors line
+    if (gestureMode === 'cut' && state.cutActive) {
+      state.cutFlip = !!e.shiftKey;
+      if (Math.hypot(x - dragStartX, y - dragStartY) > 6) dragMoved = true;
+      updateCutPreview(x, y, w, h);
+      return;
+    }
+
     // 3. Camera Orbit drag
     if (gestureMode === 'orbit' && activePointers.size === 1) {
       const dx = x - dragLastX;
@@ -1791,9 +1953,10 @@ export function initOrigamiStudio() {
     // 4. Desktop hover feedback when idle in Free Studio
     if (activePointers.size === 0 && state.mode === 'free' && !state.playing && lastCam) {
       const worldPt = screenToPlane(x, y, w, h, lastCam, v3(0, 0, 0), v3(0, 0, 1));
-      const isLineMode = state.freeInteractMode === 'line';
+      const isLineMode = state.freeInteractMode === 'line' || state.freeInteractMode === 'cut';
       const snap = findNearestSnap(x, y, w, h, 26, null, isLineMode, !isLineMode);
       state.hoveredSnap = snap;
+      if (state.freeInteractMode === 'cut') canvas.style.cursor = 'crosshair';
       if (!isLineMode && state.freeInteractMode === 'drag') {
         canvas.style.cursor = (snap || isPointOnPaper(worldPt)) ? 'grab' : '';
       }
@@ -1813,6 +1976,12 @@ export function initOrigamiStudio() {
   function handlePointerRelease(e) {
     const { x, y, w, h } = getCanvasCoords(e);
     activePointers.delete(e.pointerId);
+
+    if (gestureMode === 'cut') {
+      gestureMode = 'none';
+      commitCut();
+      return;
+    }
 
     // Finish Direct Drag-to-Fold!
     if (gestureMode === 'drag-fold') {
@@ -1925,6 +2094,18 @@ export function initOrigamiStudio() {
   window.addEventListener('keydown', (e) => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
 
+    if (state.cutActive && e.key === 'Shift' && !state.cutFlip) {
+      state.cutFlip = true;
+      if (state.cutPointer) updateCutPreview(state.cutPointer.x, state.cutPointer.y, canvas.getBoundingClientRect().width, canvas.getBoundingClientRect().height);
+      return;
+    }
+    if (e.key === 'Escape' && state.cutActive) {
+      clearInteractiveDraft();
+      gestureMode = 'none';
+      updateFreeBanner();
+      return;
+    }
+
     // Live Shift / Alt modulation during active Drag-to-Fold
     if (state.dragFoldActive && (e.key === 'Shift' || e.key === 'Alt')) {
       const nextShift = e.key === 'Shift' ? true : state.dragShiftFlip;
@@ -2002,6 +2183,11 @@ export function initOrigamiStudio() {
   });
 
   window.addEventListener('keyup', (e) => {
+    if (state.cutActive && e.key === 'Shift' && state.cutFlip) {
+      state.cutFlip = false;
+      if (state.cutPointer) updateCutPreview(state.cutPointer.x, state.cutPointer.y, canvas.getBoundingClientRect().width, canvas.getBoundingClientRect().height);
+      return;
+    }
     if (state.dragFoldActive && (e.key === 'Shift' || e.key === 'Alt')) {
       const nextShift = e.key === 'Shift' ? false : state.dragShiftFlip;
       const nextAlt = e.key === 'Alt' ? false : state.dragAltFree;
@@ -2144,9 +2330,12 @@ export function initOrigamiStudio() {
         } else if (state.dragIsUnfold) {
           textEl.textContent = t('bannerDragUnfoldActive');
         } else {
-          const base = state.dragSnapLabel
-            ? t('bannerDragActiveSnap', state.dragSnapLabel)
-            : t('bannerDragActiveNoSnap');
+          const note = state.dragLiveCompiled?.physicsNote;
+          const base = note
+            ? t(note === 'tear' ? 'bannerPhysTear' : 'bannerPhysCollide')
+            : state.dragSnapLabel
+              ? t('bannerDragActiveSnap', state.dragSnapLabel)
+              : t('bannerDragActiveNoSnap');
           textEl.textContent = isMobileViewport() ? base : `${base} · ${t('bannerDragShiftHint')}`;
         }
       } else if (state.freeMirror) {
@@ -2162,6 +2351,14 @@ export function initOrigamiStudio() {
       }
     } else if (state.freeInteractMode === 'orbit') {
       textEl.textContent = t('bannerOrbit');
+    } else if (state.freeInteractMode === 'cut') {
+      if (state.cutActive && state.cutDiscardSide) {
+        textEl.textContent = isMobileViewport() ? t('bannerCutActiveMobile') : t('bannerCutActive');
+      } else if (state.cutActive) {
+        textEl.textContent = t('bannerCutCross');
+      } else {
+        textEl.textContent = t('bannerCutIdle');
+      }
     } else {
       if (!state.pickP1) textEl.textContent = t('bannerLine1');
       else if (!state.pickP2) textEl.textContent = t('bannerLine2');
@@ -2217,6 +2414,7 @@ export function initOrigamiStudio() {
       drag: t('mobInteractDrag'),
       line: t('mobInteractLine'),
       orbit: t('mobInteractOrbit'),
+      cut: t('mobInteractCut'),
     };
     $('mob-interact-toggle').textContent = interactLabels[state.freeInteractMode];
 
@@ -2390,7 +2588,7 @@ export function initOrigamiStudio() {
     const showFreeOverlay = state.mode === 'free'
       && state.freeInteractMode !== 'orbit'
       && !state.settle
-      && (state.dragFoldActive || (!state.playing && state.playPos >= state.freeSteps.length - 0.01));
+      && (state.dragFoldActive || state.cutActive || (!state.playing && state.playPos >= state.freeSteps.length - 0.01));
 
     const effDir = state.dragFoldActive ? getEffectiveFoldDir() : state.freeFoldDir;
     const mirrorAxisX = (showFreeOverlay && state.freeMirror && state.compiledPlanar)
@@ -2422,6 +2620,12 @@ export function initOrigamiStudio() {
           dragPointer: state.dragPointer,
           dragSnapped: state.dragSnapped,
           dragAngleSnap: state.dragAngleSnap,
+          cutStart: state.cutStart,
+          cutCurrent: state.cutCurrent,
+          cutPreviewFaces: state.cutPreviewFaces,
+          cutPointer: state.cutPointer,
+          cutLabel: state.cutDiscardSide ? t('cutScrapLabel') : '',
+          cutReach: state.compiledPlanar ? computePaperBounds(state.compiledPlanar.finalState.faces).radius * 1.25 : 1.5,
         }
       : null;
 
@@ -2443,7 +2647,7 @@ export function initOrigamiStudio() {
     if (state.showCP && !isMobileViewport()) {
       const pSpec = state.mode === 'free' ? state.freePaper : (getActiveModel().paper || { width: 2, height: 2 });
       const pAspect = (pSpec?.width || 2) / (pSpec?.height || 2);
-      renderCreasePattern2D(cpCtx, cpCanvas.width, frame.creases, state.isDark, pAspect);
+      renderCreasePattern2D(cpCtx, cpCanvas.width, frame.creases, state.isDark, pAspect, frame.faces, frame.cuts);
     }
   }
 
@@ -2711,7 +2915,7 @@ export function initOrigamiStudio() {
   $('mob-undo').addEventListener('click', undoFreeStep);
   $('mob-unfold').addEventListener('click', unfoldLastFreeStep);
   $('mob-interact-toggle').addEventListener('click', () => {
-    const order = ['drag', 'line', 'orbit'];
+    const order = ['drag', 'cut', 'line', 'orbit'];
     state.freeInteractMode = order[(order.indexOf(state.freeInteractMode) + 1) % order.length];
     clearInteractiveDraft();
     syncUI();

@@ -399,7 +399,7 @@ html, body {
 /* Interact Mode Segmented Switcher */
 .interact-seg {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: 1fr 1fr;
   gap: 4px;
   padding: 3px;
   border-radius: 9px;
