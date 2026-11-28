@@ -1,6 +1,6 @@
 import fs from 'fs';
 import { ORIGAMI_CATALOG } from '../src/kinematicModels.js';
-import { compilePlanarTimeline, computeSnapPoints } from '../src/planarEngine.js';
+import { compilePlanarTimeline, computeSnapPoints, compilePlanarStep, createInitialPaper, estimateBendRadius, bendTipOffset } from '../src/planarEngine.js';
 import { GifEncoder } from '../src/gifEncoder.js';
 import { dist } from '../src/math3d.js';
 
@@ -167,7 +167,7 @@ for (let f = 0; f < numFrames; f++) {
 }
 const gifBytes = gif.finish();
 const dt = (performance.now() - t0).toFixed(1);
-fs.writeFileSync('/home/antigravity/origami-3d-studio/test/sample_verify.gif', gifBytes);
+fs.writeFileSync(new URL('./sample_verify.gif', import.meta.url), gifBytes);
 assert(gifBytes[0] === 0x47 && gifBytes[1] === 0x49 && gifBytes[2] === 0x46, 'GIF89a magic bytes');
 assert(gifBytes[gifBytes.length - 1] === 0x3b, 'GIF trailer 0x3B');
 console.log(`  [OK] Encoded ${numFrames}-frame ${W}x${H} GIF (${gifBytes.length} bytes) in ${dt}ms`);
@@ -366,6 +366,84 @@ console.log('\n=== 8. Verifying Partial Single-Flap Back-Folding, Pocket Tuck & 
   assert(danglingNoseFaces.length === 0, `Expected 0 dangling nose layers left pointing down, got ${danglingNoseFaces.length}`);
 
   console.log('  [OK] Partial opposite-direction 1-flap fold, pocket-tuck ordering, Blintz UV-island & 3-layer airplane lock-tab verified');
+}
+
+console.log('\n=== 9. Verifying Physical Paper Bending & Direct-Drag Progress Override ===');
+{
+  const base = createInitialPaper(2, 2, 0);
+  const diag = { type: 'valley', p1: [-1.5, 1.5], p2: [1.5, -1.5], side: 1, angleDeg: 180 };
+  const c = compilePlanarStep(base, diag);
+  const findUV = (faces, u, v) => {
+    for (const f of faces) for (let i = 0; i < f.uvs.length; i++) {
+      if (Math.abs(f.uvs[i].u - u) < 1e-6 && Math.abs(f.uvs[i].v - v) < 1e-6) return f.pts[i];
+    }
+    return null;
+  };
+
+  // Progress override is linear in angle and bypasses easing
+  const rigidHalf = c.evaluate(0, { progress: 0.5, bend: false });
+  const tipHalf = findUV(rigidHalf.faces, 1, 1);
+  assert(tipHalf && Math.abs(tipHalf.z - Math.SQRT2) < 1e-6, `progress 0.5 rigid tip stands straight up (z=${tipHalf && tipHalf.z})`);
+
+  // Bending subdivides the moving flap mid-fold, never at rest
+  for (const p of [0.2, 0.5, 0.8]) {
+    const fr = c.evaluate(0, { progress: p });
+    const bent = fr.faces.filter(f => f.bent);
+    assert(bent.length >= 3, `progress ${p}: flap is bent into strips (${bent.length})`);
+    assert(fr.faces.every(f => f.pts.every(q => Number.isFinite(q.x) && Number.isFinite(q.y) && Number.isFinite(q.z))), `progress ${p}: bent vertices finite`);
+    assert(bent.some(f => f.smoothEdges && f.smoothEdges.some(Boolean)), `progress ${p}: bend seams flagged smooth`);
+    // Bend is (near-)isometric: every UV edge keeps its paper length within chord error
+    const scaleXY = 2; // uv -> world for a 2x2 sheet
+    let worst = 0;
+    for (const f of bent) {
+      for (let i = 0; i < f.pts.length; i++) {
+        const j = (i + 1) % f.pts.length;
+        const uvLen = Math.hypot(f.uvs[j].u - f.uvs[i].u, f.uvs[j].v - f.uvs[i].v) * scaleXY;
+        const wLen = dist(f.pts[i], f.pts[j]);
+        worst = Math.max(worst, Math.abs(uvLen - wLen) / Math.max(uvLen, 1e-6));
+      }
+    }
+    assert(worst < 0.03, `progress ${p}: bend strips stay near-isometric (worst rel err ${worst.toFixed(4)})`);
+  }
+  for (const p of [0, 1]) {
+    const fr = c.evaluate(0, { progress: p });
+    assert(fr.faces.every(f => !f.bent), `progress ${p}: no bending at rest`);
+  }
+  assert(c.evaluate(0, { progress: 0.5, bend: false }).faces.every(f => !f.bent), 'bend:false keeps fold rigid');
+
+  // Bend tip-offset helper matches the actual bent geometry (used to keep the corner under the finger)
+  {
+    const p = 0.8;
+    const ang = Math.PI * p;
+    const bentTip = findUV(c.evaluate(0, { progress: p }).faces, 1, 1);
+    const rigidTip = findUV(c.evaluate(0, { progress: p, bend: false }).faces, 1, 1);
+    const r = estimateBendRadius(p, Math.PI, Math.SQRT2, 1);
+    const off = bendTipOffset(ang, r);
+    const u = { x: Math.SQRT1_2, y: Math.SQRT1_2 };
+    const pred = { x: rigidTip.x + u.x * off.du, y: rigidTip.y + u.y * off.du, z: rigidTip.z + off.dw };
+    assert(dist(pred, bentTip) < 1e-6, `bendTipOffset predicts bent tip (err ${dist(pred, bentTip)})`);
+  }
+
+  // Timeline evaluation stays continuous with the bend (face count returns to rigid at t = 1)
+  const tl = compilePlanarTimeline({ width: 2, height: 2 }, [diag]);
+  assert(tl.evaluate(0, 1).faces.length === tl.finalState.faces.length, 'timeline end matches final state after bending');
+  assert(tl.topUnfoldHint && tl.topUnfoldHint.pairs.every(pr => pr.mid && Number.isFinite(pr.mid.z)), 'unfold hint pairs carry mid-arc points');
+  const mid = tl.topUnfoldHint.pairs[0].mid;
+  assert(mid.z > 0.5, `unfold arc mid-point is lifted above the sheet (z=${mid.z.toFixed(3)})`);
+
+  // Unfold evaluator accepts explicit unfold progress
+  const ue = tl.topUnfoldHint.evaluateUnfold(0, { progress: 0.5, bend: false });
+  const ueTip = findUV(ue.faces, 1, 1);
+  assert(ueTip && Math.abs(ueTip.z - Math.SQRT2) < 1e-6, 'evaluateUnfold progress override lifts tip halfway');
+
+  // Mirror multiFold bends both flaps
+  const mf = compilePlanarStep(base, { type: 'multiFold', folds: [
+    { p1: [0.2, -1.5], p2: [1.5, -0.2], side: -1, foldType: 'valley', angleDeg: 180 },
+    { p1: [-0.2, -1.5], p2: [-1.5, -0.2], side: 1, foldType: 'valley', angleDeg: 180 },
+  ] });
+  const mfr = mf.evaluate(0, { progress: 0.6 });
+  assert(mfr.faces.filter(f => f.bent).length >= 4, 'mirror multiFold bends both flaps');
+  console.log('  [OK] Progress override, cylindrical paper bend (near-isometric), tip-offset compensation & unfold arc verified');
 }
 
 console.log(`\nSUMMARY: ${passed} passed, ${failed} failed`);

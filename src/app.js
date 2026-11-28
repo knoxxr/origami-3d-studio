@@ -6,11 +6,12 @@
 // ============================================================================
 
 import { v3, sub, dot, cross, norm, screenToPlane, worldToCamera, projectPoint } from './math3d.js';
-import { compilePlanarTimeline, compilePlanarStep, computeSnapPoints, createInitialPaper } from './planarEngine.js';
+import { compilePlanarTimeline, compilePlanarStep, computeSnapPoints, createInitialPaper, estimateBendRadius, bendTipOffset } from './planarEngine.js';
 import { ORIGAMI_CATALOG, PAPER_PRESETS } from './kinematicModels.js';
 import { renderOrigami3D, renderCreasePattern2D, computeLayerThick, isScreenPointOccluded } from './renderer3d.js';
 import { GifEncoder } from './gifEncoder.js';
 import { UI_STRINGS, getInitialLang, saveLang, localizeModel } from './i18n.js';
+import { createPaperAudio } from './paperAudio.js';
 
 export function initOrigamiStudio() {
   const initLang = getInitialLang();
@@ -83,6 +84,19 @@ export function initOrigamiStudio() {
     dragShiftFlip: false,
     dragAltFree: false,
     lastSnapId: '',
+    // Physical drag model (corner follows the finger in 3D)
+    dragProgress: 0,
+    dragLift: 0.3,
+    dragSpeed: 0,
+    dragSpeedTarget: 0,
+    dragLastMoveT: 0,
+    dragPointer: null,
+    dragSnapped: false,
+    dragUnfoldArc: null,
+    dragLiveKey: '',
+    settle: null,
+    creaseFlash: null,
+    soundOn: true,
 
     // Compiled timeline cache
     compiledPlanar: null,
@@ -227,6 +241,8 @@ export function initOrigamiStudio() {
     if (toastTimer) clearTimeout(toastTimer);
     toastTimer = setTimeout(() => { el.classList.remove('show'); }, durationMs);
   }
+
+  const paperAudio = createPaperAudio(() => state.soundOn);
 
   function triggerHaptic(ms = 8) {
     try {
@@ -452,6 +468,7 @@ export function initOrigamiStudio() {
   }
 
   function switchMode(newMode) {
+    finishSettleNow();
     if (state.mode === newMode) return;
     state.mode = newMode;
     state.userZoomScale = 1.0;
@@ -537,16 +554,25 @@ export function initOrigamiStudio() {
     state.dragPickedLayer = null;
     state.dragAutoFlap = false;
     state.lastSnapId = '';
+    state.dragProgress = 0;
+    state.dragPointer = null;
+    state.dragSnapped = false;
+    state.dragUnfoldArc = null;
+    state.dragLiveKey = '';
   }
 
   // ---- Free Fold Actions ----
-  function addFreeStep(step, startOffsetT = 0) {
+  function addFreeStep(step, startOffsetT = 0, alreadyFolded = false) {
+    if (!alreadyFolded) finishSettleNow();
     state.freeSteps.push(step);
     state.freeRedo = [];
     clearInteractiveDraft();
     rebuildCompiledTimeline();
-    state.playPos = Math.max(0, state.freeSteps.length - 1 + startOffsetT);
-    state.playing = true;
+    // A fold that was physically dragged & pressed by hand is already in place: no replay
+    state.playPos = alreadyFolded
+      ? state.freeSteps.length
+      : Math.max(0, state.freeSteps.length - 1 + startOffsetT);
+    state.playing = !alreadyFolded;
     state.stepHoldTimer = 0;
     state.loopHoldTimer = 0;
     saveFreeDraft();
@@ -554,6 +580,7 @@ export function initOrigamiStudio() {
   }
 
   function unfoldLastFreeStep() {
+    finishSettleNow();
     if (state.mode !== 'free' || !state.compiledPlanar || state.compiledPlanar.activeFoldCount === 0) return;
     if (isMobileViewport()) closeSheet();
     const topStep = state.freeSteps.slice().reverse().find(s => !['unfoldLast', 'unfoldAll', 'precrease', 'flip', 'rotate'].includes(s.type));
@@ -573,6 +600,7 @@ export function initOrigamiStudio() {
   }
 
   function unfoldAllFreeSteps() {
+    finishSettleNow();
     if (state.mode !== 'free' || !state.compiledPlanar || state.compiledPlanar.activeFoldCount === 0) return;
     if (isMobileViewport()) closeSheet();
     addFreeStep({
@@ -589,6 +617,7 @@ export function initOrigamiStudio() {
   }
 
   function undoFreeStep() {
+    finishSettleNow();
     if (state.freeSteps.length === 0) return;
     state.freeRedo.push(state.freeSteps.pop());
     clearInteractiveDraft();
@@ -600,6 +629,7 @@ export function initOrigamiStudio() {
   }
 
   function redoFreeStep() {
+    finishSettleNow();
     if (state.freeRedo.length === 0) return;
     addFreeStep(state.freeRedo.pop());
   }
@@ -647,6 +677,7 @@ export function initOrigamiStudio() {
   }
 
   function setFreePaperSize(paperSpec, toastLabel = '') {
+    finishSettleNow();
     state.freePaper = { ...paperSpec };
     state.freeSteps = [];
     state.freeRedo = [];
@@ -690,6 +721,7 @@ export function initOrigamiStudio() {
   }
 
   function resetFreeStudio() {
+    finishSettleNow();
     state.freeSteps = [];
     state.freeRedo = [];
     state.userZoomScale = 1.0;
@@ -703,6 +735,7 @@ export function initOrigamiStudio() {
   }
 
   function deleteFreeStepAt(idx) {
+    finishSettleNow();
     if (state.mode !== 'free') return;
     state.freeSteps.splice(idx, 1);
     state.freeRedo = [];
@@ -735,6 +768,7 @@ export function initOrigamiStudio() {
   }
 
   function applyQuickMacro(macroId) {
+    finishSettleNow();
     const viewingBack = isViewingBackSide();
     const xSign = viewingBack ? -1 : 1;
     const scope = resolveWorldLayerScope(state.freeLayerScope);
@@ -971,35 +1005,147 @@ export function initOrigamiStudio() {
 
   let lastDragSx = 0, lastDragSy = 0, lastDragW = 0, lastDragH = 0;
 
+  // ---------------------------------------------------------------------------
+  // Physical Drag-to-Fold model
+  //
+  // Real paper: you pinch a corner, lift it, carry it over and press it down.
+  // The grabbed corner therefore sits exactly under the finger in 3D, hovering at
+  // a "lift" height above the sheet. For any 3D corner position P, the unique
+  // crease that rotates the corner S onto P is the intersection of the
+  // perpendicular-bisector plane of S-P with the paper plane, and the fold angle
+  // is the angle S-F-P around that crease (F = foot of S on the crease).
+  // Lift height follows hand speed (fast = carried high, resting = laid low) and
+  // drops onto magnetic snap targets, so the paper settles where you aim.
+  // ---------------------------------------------------------------------------
+
+  /** Crease line in z = 0 that rotates S (z = 0) onto 3D point X. */
+  function creaseFromTip(S, X) {
+    const nx = X.x - S.x, ny = X.y - S.y;
+    const nLenSq = nx * nx + ny * ny;
+    if (nLenSq < 1e-8) return null;
+    const c = ((X.x * X.x + X.y * X.y + (X.z || 0) * (X.z || 0)) - (S.x * S.x + S.y * S.y)) * 0.5;
+    const k = (c - (S.x * nx + S.y * ny)) / nLenSq;
+    const F = v3(S.x + nx * k, S.y + ny * k, 0);
+    const sfx = S.x - F.x, sfy = S.y - F.y;
+    const sfLen = Math.hypot(sfx, sfy);
+    if (sfLen < 1e-5) return null;
+    const u = v3(sfx / sfLen, sfy / sfLen, 0);
+    const xf = v3(X.x - F.x, X.y - F.y, X.z || 0);
+    const xfLen = Math.hypot(xf.x, xf.y, xf.z);
+    const cosT = xfLen > 1e-6 ? Math.max(-1, Math.min(1, (xf.x * sfx + xf.y * sfy) / (xfLen * sfLen))) : 1;
+    const dir = norm(v3(-ny, nx, 0));
+    return {
+      foot: F,
+      dir,
+      u,
+      radius: sfLen,
+      theta: Math.acos(cosT),
+      landing: v3(2 * F.x - S.x, 2 * F.y - S.y, 0),
+    };
+  }
+
+  function getPaperHalf() {
+    return Math.max(0.2, Math.max(state.freePaper.width || 2, state.freePaper.height || 2) * 0.5);
+  }
+
+  /** Precompute the circular arc a folded tip travels when it is peeled back open. */
+  function buildUnfoldArc(pair) {
+    if (!pair || !pair.mid) return null;
+    const A = pair.unfolded, B = pair.mid, C = pair.folded;
+    const ab = sub(B, A), ac = sub(C, A);
+    const n = cross(ab, ac);
+    const nn = dot(n, n);
+    if (nn < 1e-8) return null;
+    const term1 = cross(n, ab);
+    const term2 = cross(ac, n);
+    const abL = dot(ab, ab), acL = dot(ac, ac);
+    const center = v3(
+      A.x + (acL * term1.x + abL * term2.x) / (2 * nn),
+      A.y + (acL * term1.y + abL * term2.y) / (2 * nn),
+      A.z + (acL * term1.z + abL * term2.z) / (2 * nn)
+    );
+    const rA = sub(A, center);
+    const R = Math.hypot(rA.x, rA.y, rA.z);
+    if (R < 1e-4) return null;
+    const e1 = norm(rA);
+    const rB = sub(B, center);
+    const bPerp = sub(rB, v3(e1.x * dot(rB, e1), e1.y * dot(rB, e1), e1.z * dot(rB, e1)));
+    if (Math.hypot(bPerp.x, bPerp.y, bPerp.z) < 1e-6) return null;
+    const e2 = norm(bPerp);
+    const rC = sub(C, center);
+    let total = Math.atan2(dot(rC, e2), dot(rC, e1));
+    if (total < 0) total += Math.PI * 2;
+    if (total < 0.2) return null;
+    return { center, R, e1, e2, total };
+  }
+
+  /** Screen-space closest point on the unfold arc: returns { phi, distPx }. */
+  function closestOnUnfoldArc(arc, sx, sy, w, h) {
+    const at = (phi) => {
+      const c = Math.cos(phi), s = Math.sin(phi);
+      const p = v3(
+        arc.center.x + arc.R * (c * arc.e1.x + s * arc.e2.x),
+        arc.center.y + arc.R * (c * arc.e1.y + s * arc.e2.y),
+        arc.center.z + arc.R * (c * arc.e1.z + s * arc.e2.z)
+      );
+      const pr = projectPoint(worldToCamera(p, lastCam), w, h);
+      return Math.hypot(pr.x - sx, pr.y - sy);
+    };
+    const N = 40;
+    let bestPhi = arc.total, bestD = Infinity;
+    for (let i = 0; i <= N; i++) {
+      const phi = (arc.total * i) / N;
+      const d = at(phi);
+      if (d < bestD) { bestD = d; bestPhi = phi; }
+    }
+    // Local refinement
+    let step = arc.total / N;
+    for (let it = 0; it < 6; it++) {
+      step *= 0.5;
+      for (const cand of [bestPhi - step, bestPhi + step]) {
+        if (cand < 0 || cand > arc.total) continue;
+        const d = at(cand);
+        if (d < bestD) { bestD = d; bestPhi = cand; }
+      }
+    }
+    return { phi: bestPhi, distPx: bestD };
+  }
+
   function updateDirectDragFold(sx, sy, w, h) {
     if (!state.dragStart || !lastCam || !state.compiledPlanar) return;
     lastDragSx = sx; lastDragSy = sy; lastDragW = w; lastDragH = h;
+    state.dragPointer = { x: sx, y: sy };
+    const S = state.dragStart;
     const snapRadius = isMobileViewport() ? 36 : 26;
-    const raw = screenToPlane(sx, sy, w, h, lastCam, v3(0, 0, 0), v3(0, 0, 1));
-    const rawPt = raw ? v3(raw.x, raw.y, 0) : state.dragStart;
+    const ground = screenToPlane(sx, sy, w, h, lastCam, v3(0, 0, 0), v3(0, 0, 1));
+    const rawPt = ground ? v3(ground.x, ground.y, 0) : S;
 
-    // 1. Check Direct Drag-to-Unfold: ONLY triggers when pulled all the way onto the teal
-    //    "Unfold" ghost ring so dragging a folded tip partway back performs a real partial fold!
-    const unfoldPair = findUnfoldPairForPoint(state.dragStart);
+    // 1. Physical Drag-to-Unfold: a folded tip peels back open along the exact arc it
+    //    travelled when it was folded, following the finger. Leaving that arc turns the
+    //    gesture into a brand-new fold of the grabbed tip instead.
+    const unfoldPair = findUnfoldPairForPoint(S);
     state.dragUnfoldGhost = unfoldPair ? unfoldPair.unfolded : null;
-
-    if (unfoldPair && state.compiledPlanar.topUnfoldHint) {
-      const ux = unfoldPair.unfolded.x - unfoldPair.folded.x;
-      const uy = unfoldPair.unfolded.y - unfoldPair.folded.y;
-      const uLen = Math.hypot(ux, uy);
-      if (uLen > 0.16) {
-        const dxU = rawPt.x - state.dragStart.x;
-        const dyU = rawPt.y - state.dragStart.y;
-        const proj = (dxU * ux + dyU * uy) / uLen;
-        const distToOrigin = Math.hypot(rawPt.x - unfoldPair.unfolded.x, rawPt.y - unfoldPair.unfolded.y);
-        const unfoldSnapDist = Math.max(0.24, Math.min(0.36, uLen * 0.28));
-
-        if (distToOrigin < unfoldSnapDist && proj > uLen * 0.78) {
-          const snapped = distToOrigin < unfoldSnapDist * 0.85 || proj >= uLen * 0.90;
+    const hint = state.compiledPlanar.topUnfoldHint;
+    const lowering = state.settle && state.settle.kind === 'lower';
+    if (unfoldPair && hint && !state.dragAltFree && !lowering) {
+      if (!state.dragUnfoldArc || state.dragUnfoldArc.pair !== unfoldPair) {
+        const arc = buildUnfoldArc(unfoldPair);
+        state.dragUnfoldArc = arc ? { ...arc, pair: unfoldPair } : null;
+      }
+      const arc = state.dragUnfoldArc;
+      if (arc) {
+        const hit = closestOnUnfoldArc(arc, sx, sy, w, h);
+        const enterPx = isMobileViewport() ? 34 : 26;
+        const keepPx = enterPx * 2.1;
+        const keep = state.dragIsUnfold ? hit.distPx < keepPx : hit.distPx < enterPx;
+        const progressU = 1 - hit.phi / arc.total;
+        if (keep && (state.dragIsUnfold || progressU > 0.04 || !dragMoved)) {
+          const snapped = progressU > 0.9;
           if (snapped && state.lastSnapId !== 'unfold-origin') {
             state.lastSnapId = 'unfold-origin';
             triggerHaptic(10);
-          } else if (!snapped) {
+            paperAudio.snapTick();
+          } else if (!snapped && state.lastSnapId === 'unfold-origin') {
             state.lastSnapId = '';
           }
           const topStep = state.freeSteps.slice().reverse().find(s => !['unfoldLast', 'unfoldAll', 'precrease', 'flip', 'rotate'].includes(s.type));
@@ -1007,6 +1153,7 @@ export function initOrigamiStudio() {
           const koLbl = topStep?.labelKo || topStep?.label || '';
           state.dragCancelZone = false;
           state.dragIsUnfold = true;
+          state.dragSnapped = snapped;
           state.dragCurrent = snapped ? v3(unfoldPair.unfolded.x, unfoldPair.unfolded.y, 0) : rawPt;
           state.dragSnapLabel = snapped ? t('unfoldSnapOrigin') : t('unfoldDragOut');
           state.dragCrease = null;
@@ -1022,19 +1169,21 @@ export function initOrigamiStudio() {
             descEn: UI_STRINGS.en.freeStepUnfoldLastDesc,
             descKo: UI_STRINGS.ko.freeStepUnfoldLastDesc,
           };
-          state.dragLiveCompiled = { evaluate: state.compiledPlanar.topUnfoldHint.evaluateUnfold };
-          state.dragLiveT = snapped ? 0.94 : Math.max(0.65, Math.min(0.92, proj / uLen));
+          state.dragLiveCompiled = { evaluate: hint.evaluateUnfold };
+          state.dragProgress = Math.max(0, Math.min(1, progressU));
           return;
         }
       }
     }
 
-    // 2. Standard Direct Drag-to-Fold (Huzita-Hatori Axiom 2) + optional Mirror Fold & Shift/Alt modulation
+    // 2. Physical Drag-to-Fold (Huzita-Hatori Axiom 2 generalised to a lifted 3D corner)
     state.dragIsUnfold = false;
-    const snapTarget = state.dragAltFree ? null : findNearestSnap(sx, sy, w, h, snapRadius, state.dragStart, true);
-    const cur = snapTarget ? v3(snapTarget.x, snapTarget.y, 0) : rawPt;
+    const uiDir = getEffectiveFoldDir();
+    const uiTool = getEffectiveDragTool();
+    const worldDir = resolveWorldFoldDir(uiDir);
+    const liftSign = worldDir === 'mountain' ? -1 : 1;
+    const snapTarget = state.dragAltFree ? null : findNearestSnap(sx, sy, w, h, snapRadius, S, true);
 
-    state.dragCurrent = cur;
     const snapKeyMap = {
       vertex: 'snapVertex',
       center: 'snapCenter',
@@ -1044,46 +1193,77 @@ export function initOrigamiStudio() {
     };
     const snapKey = snapTarget ? (snapKeyMap[snapTarget.kind] || 'snapMid') : '';
     state.dragSnapLabel = snapKey ? t(snapKey) : '';
+    state.dragSnapped = !!snapTarget;
 
     if (snapTarget) {
       const sid = `${snapTarget.kind}:${snapTarget.x.toFixed(2)},${snapTarget.y.toFixed(2)}`;
       if (state.lastSnapId !== sid) {
         state.lastSnapId = sid;
         triggerHaptic(8);
+        paperAudio.snapTick();
       }
     } else {
       state.lastSnapId = '';
     }
 
-    const dx = cur.x - state.dragStart.x;
-    const dy = cur.y - state.dragStart.y;
-    const dLen = Math.hypot(dx, dy);
-
     const paperBounds = computePaperBounds(state.compiledPlanar.finalState.faces);
+    const groundDist = Math.hypot(rawPt.x - S.x, rawPt.y - S.y);
     const minDrag = Math.max(0.035, Math.min(0.14, paperBounds.radius * 0.12));
-    if (dLen < minDrag) {
+    const targetDist = snapTarget ? Math.hypot(snapTarget.x - S.x, snapTarget.y - S.y) : groundDist;
+    if (targetDist < minDrag) {
       state.dragCancelZone = dragMoved;
+      state.dragCurrent = rawPt;
       state.dragCrease = null;
       state.dragMirrorCrease = null;
       state.dragLiveStep = null;
       state.dragLiveCompiled = null;
-      state.dragLiveT = 0;
+      state.dragProgress = 0;
       return;
     }
-
     state.dragCancelZone = false;
-    // Huzita-Hatori Axiom 2: exact perpendicular bisector bringing dragStart onto cur!
-    const mid = v3((state.dragStart.x + cur.x) * 0.5, (state.dragStart.y + cur.y) * 0.5, 0);
-    const dir = norm(v3(-dy, dx, 0));
+
+    const targetRad = Math.max(0.2, (state.freeAngle * Math.PI) / 180);
+    const paperHalf = getPaperHalf();
+    let fold = null;
+    if (snapTarget) {
+      // Magnetic target: crease is the exact bisector; the corner hovers just above the target
+      const Q = v3(snapTarget.x, snapTarget.y, 0);
+      fold = creaseFromTip(S, Q);
+      if (fold) fold.theta = Math.PI - 2 * Math.atan(state.dragLift);
+    } else {
+      // Free drag: corner sits under the finger at the current lift height
+      const hMax = Math.max(0.12, paperBounds.radius * 0.75);
+      const hgt = liftSign * Math.min(hMax, state.dragLift * groundDist);
+      const fingerPt = screenToPlane(sx, sy, w, h, lastCam, v3(0, 0, hgt), v3(0, 0, 1)) || v3(rawPt.x, rawPt.y, hgt);
+      const P = v3(fingerPt.x, fingerPt.y, hgt);
+      // Compensate the soft paper bend so the bent flap's corner (not the rigid one) meets the finger
+      let aim = P;
+      for (let it = 0; it < 3; it++) {
+        const f = creaseFromTip(S, aim);
+        if (!f) break;
+        const prog = Math.min(1, f.theta / targetRad);
+        const r = estimateBendRadius(prog, targetRad, f.radius, paperHalf);
+        const off = bendTipOffset(prog * targetRad, r);
+        aim = v3(
+          P.x - f.u.x * off.du,
+          P.y - f.u.y * off.du,
+          P.z - liftSign * off.dw
+        );
+      }
+      fold = creaseFromTip(S, aim);
+    }
+    if (!fold) return;
+
+    const mid = fold.foot;
+    const dir = fold.dir;
+    const cur = fold.landing;
+    state.dragCurrent = cur;
     const halfCrease = Math.max(0.45, Math.min(1.45, paperBounds.radius * 1.15));
     const p1 = v3(mid.x - dir.x * halfCrease, mid.y - dir.y * halfCrease, 0);
     const p2 = v3(mid.x + dir.x * halfCrease, mid.y + dir.y * halfCrease, 0);
     const leftNormal = norm(cross(v3(0, 0, 1), dir));
-    const side = dot(sub(state.dragStart, mid), leftNormal) >= 0 ? 1 : -1;
+    const side = dot(sub(S, mid), leftNormal) >= 0 ? 1 : -1;
 
-    const uiDir = getEffectiveFoldDir();
-    const uiTool = getEffectiveDragTool();
-    const worldDir = resolveWorldFoldDir(uiDir);
     const worldTool = (uiTool === 'valley' || uiTool === 'mountain') ? worldDir : uiTool;
     const effUiScope = (state.freeLayerScope === 'all' && state.dragAutoFlap) ? 'top' : state.freeLayerScope;
     const worldScope = resolveWorldLayerScope(effUiScope);
@@ -1102,7 +1282,7 @@ export function initOrigamiStudio() {
       angleDeg: state.freeAngle,
       layerScope: worldScope,
       targetLayer: effUiScope === 'top' ? state.dragPickedLayer : null,
-      seedPoint: effUiScope !== 'all' ? [state.dragStart.x, state.dragStart.y] : null,
+      seedPoint: effUiScope !== 'all' ? [S.x, S.y] : null,
       offset: state.freePleatOffset,
       labelEn: `${toolNamesEn[uiTool]}${sufEn}`,
       labelKo: `${toolNamesKo[uiTool]}${sufKo}`,
@@ -1113,10 +1293,221 @@ export function initOrigamiStudio() {
     state.dragCrease = { p1, p2 };
     state.dragMirrorCrease = built.mirrorCrease;
     state.dragLiveStep = built.step;
-    state.dragLiveCompiled = compilePlanarStep(state.compiledPlanar.finalState, built.step);
-    // Real-time 3D preview angle follows drag distance & snaps close to finished when locked on target!
-    const liveScale = Math.max(0.32, paperBounds.radius * 1.1);
-    state.dragLiveT = snapTarget ? 0.88 : Math.min(0.84, 0.25 + (dLen / liveScale) * 0.62);
+    // Recompile only when the crease actually moved (lift easing re-runs this every frame)
+    const key = `${built.step.type}|${p1.x.toFixed(4)},${p1.y.toFixed(4)},${p2.x.toFixed(4)},${p2.y.toFixed(4)}|${side}|${worldDir}|${worldScope}|${state.freeMirror}`;
+    if (!state.dragLiveCompiled || state.dragLiveKey !== key) {
+      state.dragLiveCompiled = compilePlanarStep(state.compiledPlanar.finalState, built.step);
+      state.dragLiveKey = key;
+    }
+    state.dragProgress = Math.max(0.02, Math.min(0.995, fold.theta / targetRad));
+  }
+
+  /** Per-frame drag physics: hand-speed driven lift height, eased like a real wrist. */
+  function stepDragPhysics(dt, now) {
+    if (!state.dragFoldActive || gestureMode !== 'drag-fold') return;
+    if (now - state.dragLastMoveT > 70) state.dragSpeedTarget = 0;
+    const attack = state.dragSpeedTarget > state.dragSpeed ? 14 : 3.2;
+    state.dragSpeed += (state.dragSpeedTarget - state.dragSpeed) * (1 - Math.exp(-dt * attack));
+    const liftTarget = state.dragSnapped ? 0.11 : (0.3 + 0.48 * state.dragSpeed);
+    const prevLift = state.dragLift;
+    state.dragLift += (liftTarget - state.dragLift) * (1 - Math.exp(-dt * 9));
+    paperAudio.rustle(state.dragSpeed);
+    if (Math.abs(state.dragLift - prevLift) > 0.0015 && !state.dragIsUnfold) {
+      updateDirectDragFold(lastDragSx, lastDragSy, lastDragW, lastDragH);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Release physics: the flap drops and is pressed flat (or springs back open)
+  // ---------------------------------------------------------------------------
+  function clipCreaseToPaper(cr, faces) {
+    if (!cr || !faces || !faces.length) return null;
+    const N = 90;
+    let first = -1, last = -1;
+    for (let i = 0; i <= N; i++) {
+      const tt = i / N;
+      const x = cr.p1.x + (cr.p2.x - cr.p1.x) * tt;
+      const y = cr.p1.y + (cr.p2.y - cr.p1.y) * tt;
+      let inside = false;
+      for (const f of faces) {
+        if (pointInPoly2D(x, y, f.pts)) { inside = true; break; }
+      }
+      if (inside) {
+        if (first < 0) first = i;
+        last = i;
+      }
+    }
+    if (first < 0 || last <= first) return null;
+    const lerpPt = (tt) => v3(cr.p1.x + (cr.p2.x - cr.p1.x) * tt, cr.p1.y + (cr.p2.y - cr.p1.y) * tt, 0);
+    return { p1: lerpPt(first / N), p2: lerpPt(last / N) };
+  }
+
+  function startSettle(spec) {
+    finishSettleNow();
+    state.settle = { ...spec, elapsed: 0, p: spec.from, pressed: false };
+  }
+
+  function finishSettleNow() {
+    const st = state.settle;
+    if (!st) return;
+    if (st.kind === 'lower') {
+      state.dragLift = 0;
+      updateDirectDragFold(lastDragSx, lastDragSy, lastDragW, lastDragH);
+    }
+    state.settle = null;
+    if (!st.pressed && st.onPress) st.onPress();
+    if (st.onDone) st.onDone();
+  }
+
+  function stepSettle(dt) {
+    const st = state.settle;
+    if (!st) return;
+    st.elapsed += dt;
+    const { from, kind } = st;
+    if (kind === 'lower') {
+      // The hand presses the lifted corner straight down where the finger is: the lift
+      // height falls to zero (gravity-like) while the crease re-solves every frame, so the
+      // corner touches down exactly under the cursor.
+      const tau = Math.min(1, st.elapsed / st.dur);
+      const fall = 0.3 * tau + 0.7 * tau * tau;
+      state.dragLift = st.lift0 * (1 - fall);
+      updateDirectDragFold(lastDragSx, lastDragSy, lastDragW, lastDragH);
+      if (tau >= 1) finishSettleNow();
+    } else if (kind === 'press') {
+      // Gravity-like drop that accelerates into the table, then the crease is pressed
+      const tau = Math.min(1, st.elapsed / st.dur);
+      st.p = from + (1 - from) * (0.3 * tau + 0.7 * tau * tau);
+      if (tau >= 1) {
+        st.p = 1;
+        if (!st.pressed) { st.pressed = true; if (st.onPress) st.onPress(); }
+        state.settle = null;
+        if (st.onDone) st.onDone();
+      }
+    } else if (kind === 'precrease') {
+      // Press flat, hold a beat, then let the sheet spring back open with a crease
+      const d1 = st.dur, hold = 0.06, d2 = 0.34;
+      const e = st.elapsed;
+      if (e < d1) {
+        const tau = e / d1;
+        st.p = from + (1 - from) * (0.3 * tau + 0.7 * tau * tau);
+      } else {
+        if (!st.pressed) { st.pressed = true; if (st.onPress) st.onPress(); }
+        if (e < d1 + hold) st.p = 1;
+        else {
+          const tau = Math.min(1, (e - d1 - hold) / d2);
+          st.p = 1 - (1 - Math.pow(1 - tau, 3));
+          if (tau >= 1) {
+            st.p = 0;
+            state.settle = null;
+            if (st.onDone) st.onDone();
+          }
+        }
+      }
+    } else {
+      // 'spring' toward st.to with a soft ease-out (paper relaxing back)
+      const tau = Math.max(0, Math.min(1, (st.elapsed - (st.delay || 0)) / st.dur));
+      const eased = 1 - Math.pow(1 - tau, 3);
+      st.p = from + (st.to - from) * eased;
+      if (tau >= 1) {
+        st.p = st.to;
+        state.settle = null;
+        if (st.onDone) st.onDone();
+      }
+    }
+  }
+
+  function flashCreases(segments) {
+    const segs = (segments || []).filter(Boolean);
+    if (!segs.length) return;
+    state.creaseFlash = { segments: segs, start: performance.now(), dur: 520 };
+  }
+
+  function releaseDirectDrag() {
+    const compiled = state.dragLiveCompiled;
+    const p0 = state.dragProgress || 0;
+    const step = state.dragLiveStep;
+    const baseFaces = state.compiledPlanar?.finalState?.faces || [];
+    const isUnfold = state.dragIsUnfold;
+    const cancel = state.dragCancelZone || !dragMoved;
+    const keepDrag = {
+      dragStart: state.dragStart,
+      dragPickedLayer: state.dragPickedLayer,
+      dragAutoFlap: state.dragAutoFlap,
+      dragShiftFlip: state.dragShiftFlip,
+      dragAltFree: state.dragAltFree,
+      dragLift: state.dragLift,
+      dragLiveKey: state.dragLiveKey,
+    };
+    paperAudio.stopRustle();
+    clearInteractiveDraft();
+    updateFreeBanner();
+
+    if (!compiled || !step) return;
+
+    if (cancel) {
+      if (p0 > 0.01) {
+        startSettle({ compiled, from: p0, to: 0, kind: 'spring', dur: 0.24 + 0.16 * p0 });
+      }
+      return;
+    }
+
+    if (isUnfold) {
+      if (p0 >= 0.42) {
+        startSettle({
+          compiled, from: p0, to: 1, kind: 'spring', dur: 0.16 + 0.24 * (1 - p0),
+          onDone: () => { paperAudio.unfold(); triggerHaptic(10); addFreeStep(step, 0, true); },
+        });
+      } else {
+        // Not pulled far enough: the crease's memory snaps the flap back down
+        startSettle({
+          compiled, from: p0, to: 0, kind: 'spring', dur: 0.2 + 0.2 * p0,
+          onDone: () => { paperAudio.crease(0.5); },
+        });
+      }
+      return;
+    }
+
+    // Keep the live drag alive while the corner is lowered onto the table under the finger
+    state.dragFoldActive = true;
+    state.dragStart = keepDrag.dragStart;
+    state.dragPickedLayer = keepDrag.dragPickedLayer;
+    state.dragAutoFlap = keepDrag.dragAutoFlap;
+    state.dragShiftFlip = keepDrag.dragShiftFlip;
+    state.dragAltFree = keepDrag.dragAltFree;
+    state.dragLiveCompiled = compiled;
+    state.dragLiveStep = step;
+    state.dragLiveKey = keepDrag.dragLiveKey;
+    state.dragProgress = p0;
+    const isPrecrease = step.type === 'precrease';
+    const pressNow = () => {
+      paperAudio.crease(1);
+      triggerHaptic([6, 28, 14]);
+      flashCreases([
+        clipCreaseToPaper(state.dragCrease, baseFaces),
+        clipCreaseToPaper(state.dragMirrorCrease, baseFaces),
+      ]);
+    };
+    startSettle({
+      kind: 'lower',
+      lift0: Math.max(0.0001, keepDrag.dragLift),
+      dur: 0.1 + 0.24 * (1 - p0),
+      onPress: pressNow,
+      onDone: () => {
+        const finalStep = state.dragLiveStep || step;
+        const finalCompiled = state.dragLiveCompiled || compiled;
+        const finalP = state.dragProgress;
+        clearInteractiveDraft();
+        if (isPrecrease) {
+          // Pre-crease: pressed flat, then the sheet relaxes back open leaving the crease
+          startSettle({
+            compiled: finalCompiled, from: finalP, to: 0, kind: 'spring', dur: 0.36, delay: 0.06,
+            onDone: () => { addFreeStep(finalStep, 0, true); },
+          });
+        } else {
+          addFreeStep(finalStep, 0, true);
+        }
+      },
+    });
   }
 
   function isRaisedInteriorFlapSnap(snap) {
@@ -1162,6 +1553,7 @@ export function initOrigamiStudio() {
 
   canvas.addEventListener('pointerdown', (e) => {
     canvas.setPointerCapture(e.pointerId);
+    finishSettleNow();
     const { x, y, w, h } = getCanvasCoords(e);
     activePointers.set(e.pointerId, { x, y });
     state.targetCamera = null;
@@ -1169,6 +1561,8 @@ export function initOrigamiStudio() {
 
     // Two-finger gesture -> Pinch-to-Zoom + 2-Finger Orbit!
     if (activePointers.size === 2) {
+      paperAudio.stopRustle();
+      canvas.style.cursor = '';
       clearInteractiveDraft();
       const pts = Array.from(activePointers.values());
       pinchStartDist = Math.max(10, Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y));
@@ -1225,7 +1619,20 @@ export function initOrigamiStudio() {
         state.dragLiveCompiled = null;
         state.dragIsUnfold = false;
         state.dragUnfoldGhost = unfoldPair ? unfoldPair.unfolded : null;
+        state.dragUnfoldArc = null;
+        state.dragProgress = 0;
+        state.dragLift = 0.42; // a fresh pinch lifts the corner noticeably
+        state.dragSpeed = 0;
+        state.dragSpeedTarget = 0;
+        state.dragLastMoveT = performance.now();
+        state.dragPointer = { x, y };
+        state.dragSnapped = false;
+        state.dragLiveKey = '';
         lastDragSx = x; lastDragSy = y; lastDragW = w; lastDragH = h;
+        canvas.style.cursor = 'grabbing';
+        paperAudio.pickup();
+        paperAudio.startRustle();
+        triggerHaptic(6);
         updateFreeBanner();
         return;
       }
@@ -1274,6 +1681,12 @@ export function initOrigamiStudio() {
       state.dragShiftFlip = !!e.shiftKey;
       state.dragAltFree = !!e.altKey;
       if (Math.hypot(x - dragStartX, y - dragStartY) > 6) dragMoved = true;
+      const nowT = performance.now();
+      const dtMove = Math.max(4, nowT - state.dragLastMoveT);
+      const prev = state.dragPointer || { x, y };
+      const speedPx = (Math.hypot(x - prev.x, y - prev.y) / dtMove) * 1000;
+      state.dragSpeedTarget = Math.max(0, Math.min(1, speedPx / 1300));
+      state.dragLastMoveT = nowT;
       updateDirectDragFold(x, y, w, h);
       updateFreeBanner();
       return;
@@ -1300,6 +1713,9 @@ export function initOrigamiStudio() {
       const isLineMode = state.freeInteractMode === 'line';
       const snap = findNearestSnap(x, y, w, h, 26, null, isLineMode, !isLineMode);
       state.hoveredSnap = snap;
+      if (!isLineMode && state.freeInteractMode === 'drag') {
+        canvas.style.cursor = (snap || isPointOnPaper(worldPt)) ? 'grab' : '';
+      }
       state.hoverWorld = snap ? v3(snap.x, snap.y, 0) : (worldPt ? v3(worldPt.x, worldPt.y, 0) : null);
 
       if (state.freeInteractMode === 'line' && state.pickP1 && state.pickP2 && state.hoverWorld) {
@@ -1319,16 +1735,10 @@ export function initOrigamiStudio() {
 
     // Finish Direct Drag-to-Fold!
     if (gestureMode === 'drag-fold') {
-      const stepToCommit = state.dragCancelZone ? null : state.dragLiveStep;
-      const startT = state.dragLiveT;
       gestureMode = 'none';
-      if (stepToCommit && dragMoved) {
-        // Commit the fold and finish animating smoothly from current live angle to 1.0!
-        addFreeStep(stepToCommit, Math.min(0.85, startT));
-      } else {
-        clearInteractiveDraft();
-        updateFreeBanner();
-      }
+      canvas.style.cursor = '';
+      // Let go: the flap drops & gets pressed into a crease (or springs back open)
+      releaseDirectDrag();
       return;
     }
 
@@ -1414,6 +1824,8 @@ export function initOrigamiStudio() {
     activePointers.delete(e.pointerId);
     if (activePointers.size === 0) {
       gestureMode = 'none';
+      paperAudio.stopRustle();
+      canvas.style.cursor = '';
       clearInteractiveDraft();
       updateFreeBanner();
     }
@@ -1879,14 +2291,24 @@ export function initOrigamiStudio() {
 
     // If user is actively Drag-to-Folding or Drag-to-Unfolding, render the LIVE 3D mesh directly!
     let frame;
-    if (state.dragFoldActive && state.dragLiveCompiled && !state.dragCancelZone) {
-      frame = state.dragLiveCompiled.evaluate(state.dragLiveT);
+    if (state.settle && state.settle.compiled) {
+      frame = state.settle.compiled.evaluate(0, { progress: state.settle.p });
+    } else if (state.dragFoldActive && state.dragLiveCompiled && !state.dragCancelZone) {
+      frame = state.dragLiveCompiled.evaluate(0, { progress: state.dragProgress });
     } else {
       frame = evaluateAtPos(state.playPos);
     }
 
+    let creaseFlash = null;
+    if (state.creaseFlash) {
+      const ft = (performance.now() - state.creaseFlash.start) / state.creaseFlash.dur;
+      if (ft >= 1) state.creaseFlash = null;
+      else creaseFlash = { segments: state.creaseFlash.segments, t: ft };
+    }
+
     const showFreeOverlay = state.mode === 'free'
       && state.freeInteractMode !== 'orbit'
+      && !state.settle
       && (state.dragFoldActive || (!state.playing && state.playPos >= state.freeSteps.length - 0.01));
 
     const effDir = state.dragFoldActive ? getEffectiveFoldDir() : state.freeFoldDir;
@@ -1916,6 +2338,8 @@ export function initOrigamiStudio() {
           unfoldGhostLabel: t('unfoldBadge'),
           dragCancelZone: state.dragCancelZone,
           dragCancelLabel: t('dragCancelBadge'),
+          dragPointer: state.dragPointer,
+          dragSnapped: state.dragSnapped,
         }
       : null;
 
@@ -1931,6 +2355,7 @@ export function initOrigamiStudio() {
       showWireframe: state.showWireframe,
       showShadow: true,
       freeOverlay,
+      creaseFlash,
     });
 
     if (state.showCP && !isMobileViewport()) {
@@ -1944,6 +2369,8 @@ export function initOrigamiStudio() {
   function tick(now) {
     const dt = Math.min(0.05, (now - lastTime) / 1000);
     lastTime = now;
+    stepSettle(dt);
+    stepDragPhysics(dt, now);
 
     const total = getActiveModel().steps.length;
     if (state.playing && total > 0) {
@@ -2218,6 +2645,17 @@ export function initOrigamiStudio() {
   $('toggle-guides').addEventListener('click', (e) => { state.showGuides = !state.showGuides; e.currentTarget.classList.toggle('active', state.showGuides); });
   $('toggle-cp').addEventListener('click', (e) => { state.showCP = !state.showCP; e.currentTarget.classList.toggle('active', state.showCP); $('cp-overlay').style.display = state.showCP ? 'block' : 'none'; });
   $('toggle-wire').addEventListener('click', (e) => { state.showWireframe = !state.showWireframe; e.currentTarget.classList.toggle('active', state.showWireframe); });
+  const SOUND_KEY = 'origami3d_sound_v1';
+  try { state.soundOn = localStorage.getItem(SOUND_KEY) !== 'off'; } catch { state.soundOn = true; }
+  if ($('toggle-sound')) {
+    $('toggle-sound').classList.toggle('active', state.soundOn);
+    $('toggle-sound').addEventListener('click', (e) => {
+      state.soundOn = !state.soundOn;
+      e.currentTarget.classList.toggle('active', state.soundOn);
+      try { localStorage.setItem(SOUND_KEY, state.soundOn ? 'on' : 'off'); } catch { /* storage blocked */ }
+      if (state.soundOn) paperAudio.crease(0.6);
+    });
+  }
 
   // Camera presets (always re-center & auto-frame the current paper!)
   function applyCameraPreset(yaw, pitch, fallbackDist) {
