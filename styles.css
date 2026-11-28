@@ -1600,6 +1600,29 @@ html, body {
 
 .quick-btn.active-layer .q-lbl { color: #0f766e; }
 
+.quick-btn.quick-new {
+  border-top: 1px solid var(--border, rgba(120, 100, 80, 0.18));
+  border-radius: 0 0 8px 8px;
+}
+
+.quick-btn.confirming,
+.quick-btn.confirming:hover:not(:disabled),
+.btn-secondary.confirming,
+.btn-secondary.confirming:hover:not(:disabled) {
+  background: #cf4436;
+  border-color: #cf4436;
+  color: #fff;
+  animation: newSheetPulse 0.9s ease-in-out infinite;
+}
+
+.quick-btn.confirming .q-lbl,
+.quick-btn.confirming .q-ico { color: #fff; }
+
+@keyframes newSheetPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(207, 68, 54, 0.45); }
+  50% { box-shadow: 0 0 0 5px rgba(207, 68, 54, 0); }
+}
+
 /* Paper Size & Ratio Selector */
 .paper-orient-btn {
   display: inline-flex;
@@ -1952,6 +1975,21 @@ html, body {
 
   .quick-btn .q-lbl {
     font-size: 10.5px;
+  }
+
+  .quick-btn.quick-new {
+    border-top: none;
+    border-left: 1px solid var(--border, rgba(120, 100, 80, 0.18));
+    border-radius: 0 7px 7px 0;
+  }
+}
+
+@media (max-width: 360px) {
+  .quick-btn {
+    padding: 0 6px;
+  }
+  .quick-btn .q-lbl {
+    font-size: 10px;
   }
 }
 
