@@ -299,6 +299,26 @@ function isBoundaryUVEdge(u1, u2) {
          (u1.v >= 1 - eps && u2.v >= 1 - eps);
 }
 
+/** Does a UV edge lie on one of the scissor-cut segments (so it is a raw paper edge)? */
+function isOnCutUV(u1, u2, cuts) {
+  if (!cuts || cuts.length === 0) return false;
+  const eps = 3.5e-3;
+  for (const c of cuts) {
+    const dx = c.u2 - c.u1, dy = c.v2 - c.v1;
+    const L = Math.hypot(dx, dy);
+    if (L < 1e-6) continue;
+    const nx = -dy / L, ny = dx / L;
+    const d1 = Math.abs((u1.u - c.u1) * nx + (u1.v - c.v1) * ny);
+    const d2 = Math.abs((u2.u - c.u1) * nx + (u2.v - c.v1) * ny);
+    if (d1 > eps || d2 > eps) continue;
+    const t1 = ((u1.u - c.u1) * dx + (u1.v - c.v1) * dy) / (L * L);
+    const t2 = ((u2.u - c.u1) * dx + (u2.v - c.v1) * dy) / (L * L);
+    const tol = eps / L;
+    if (Math.min(t1, t2) >= -tol && Math.max(t1, t2) <= 1 + tol) return true;
+  }
+  return false;
+}
+
 /**
  * Compute adaptive physical layer spacing so even heavily stacked folds stay
  * realistically paper-thin without drifting apart into floating slices.
@@ -522,6 +542,7 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
   ctx.fillRect(0, 0, width, height);
 
   const faces = frameData?.faces || [];
+  const frameCuts = frameData?.cuts || [];
   const frontRgb = hexToRgb(frontColor);
   const backRgb = hexToRgb(backColor);
 
@@ -679,7 +700,7 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
           item.edgeKinds[e] = 'smooth';
           continue;
         }
-        if (isBoundaryUVEdge(u1, u2)) {
+        if (isBoundaryUVEdge(u1, u2) || isOnCutUV(u1, u2, frameCuts)) {
           item.edgeKinds[e] = 'border';
           continue;
         }
@@ -1270,6 +1291,16 @@ export function renderOrigami3D(ctx, width, height, frameData, options = {}) {
       if (cp1.z <= 0.1 || cp2.z <= 0.1) continue;
       const s1 = projectPoint(cp1, width, height);
       const s2 = projectPoint(cp2, width, height);
+      if (g.type === 'cut') {
+        ctx.beginPath();
+        ctx.setLineDash([9, 4]);
+        ctx.strokeStyle = isDark ? 'rgba(245,242,235,0.85)' : 'rgba(41,37,36,0.8)';
+        ctx.lineWidth = 2;
+        ctx.moveTo(s1.x, s1.y);
+        ctx.lineTo(s2.x, s2.y);
+        ctx.stroke();
+        continue;
+      }
       const isMountain = viewSideZ >= 0 ? (g.type === 'mountain') : (g.type !== 'mountain');
 
       // Subtle light halo behind dashed guide so it reads clearly on dark & light paper
@@ -1341,6 +1372,7 @@ function drawFreeStudioOverlay(ctx, width, height, cam, overlay, isDark, layerTh
     mirrorAxisX = null, dragIsUnfold = false, unfoldGhost = null, unfoldGhostLabel = 'Unfold',
     dragCancelZone = false, dragCancelLabel = 'Release to cancel',
     dragPointer = null, dragSnapped = false, dragAngleSnap = 0,
+    cutStart = null, cutCurrent = null, cutPreviewFaces = null, cutPointer = null, cutLabel = '', cutReach = 1.5,
   } = overlay;
   ctx.save();
 
@@ -1403,6 +1435,111 @@ function drawFreeStudioOverlay(ctx, width, height, cam, overlay, isDark, layerTh
     ctx.strokeStyle = isHighlight ? '#ffffff' : (sp.kind === 'center' ? '#cf4436' : foldAccent);
     ctx.stroke();
   };
+
+  // ---- Mode C: Scissors ----
+  if (interactMode === 'cut') {
+    // Snap targets (corners, midpoints, intersections) so cuts can start/end precisely
+    if (snapPoints) {
+      for (const sp of snapPoints) {
+        if (!cutStart && sp.kind !== 'vertex' && sp.kind !== 'midpoint' && sp.kind !== 'center') continue;
+        const pr = projectPoint(worldToCamera(snapWorldPos(sp, layerThick, viewSideZ), cam), width, height);
+        const isHov = (hoveredSnap && hoveredSnap === sp)
+          || (cutCurrent && Math.hypot(sp.x - cutCurrent.x, sp.y - cutCurrent.y) < 1e-3)
+          || (cutStart && Math.hypot(sp.x - cutStart.x, sp.y - cutStart.y) < 1e-3);
+        drawSnapDot(pr, sp, isHov, !!cutStart);
+      }
+    }
+    if (cutStart && cutCurrent) {
+      // Scrap preview: the piece that will fall away
+      if (cutPreviewFaces && cutPreviewFaces.length) {
+        ctx.save();
+        ctx.beginPath();
+        for (const f of cutPreviewFaces) {
+          const scr = f.pts.map(p => projectPoint(worldToCamera(p, cam), width, height));
+          // Folded layers are mirrored: normalise winding so stacked layers union instead of cancelling
+          let area2 = 0;
+          for (let k = 0; k < scr.length; k++) {
+            const a = scr[k], b = scr[(k + 1) % scr.length];
+            area2 += a.x * b.y - b.x * a.y;
+          }
+          if (area2 < 0) scr.reverse();
+          ctx.moveTo(scr[0].x, scr[0].y);
+          for (let k = 1; k < scr.length; k++) ctx.lineTo(scr[k].x, scr[k].y);
+          ctx.closePath();
+        }
+        ctx.fillStyle = 'rgba(220, 38, 38, 0.30)';
+        ctx.fill('nonzero');
+        ctx.restore();
+      }
+      // The cut line runs right across the paper (scissors go through everything)
+      const dx = cutCurrent.x - cutStart.x, dy = cutCurrent.y - cutStart.y;
+      const L = Math.hypot(dx, dy);
+      if (L > 1e-4) {
+        const ux = dx / L, uy = dy / L;
+        const midX = (cutStart.x + cutCurrent.x) * 0.5, midY = (cutStart.y + cutCurrent.y) * 0.5;
+        const reach = Math.max(L * 0.5 + 0.05, cutReach * 2);
+        const e1 = projectPoint(worldToCamera(v3(midX - ux * reach, midY - uy * reach, 0), cam), width, height);
+        const e2 = projectPoint(worldToCamera(v3(midX + ux * reach, midY + uy * reach, 0), cam), width, height);
+        const a = projectPoint(worldToCamera(cutStart, cam), width, height);
+        const b = projectPoint(worldToCamera(cutCurrent, cam), width, height);
+        ctx.save();
+        ctx.lineCap = 'round';
+        // faint full-length guide
+        ctx.beginPath();
+        ctx.setLineDash([2, 5]);
+        ctx.strokeStyle = isDark ? 'rgba(255,255,255,0.45)' : 'rgba(40,30,20,0.40)';
+        ctx.lineWidth = 1.2;
+        ctx.moveTo(e1.x, e1.y);
+        ctx.lineTo(e2.x, e2.y);
+        ctx.stroke();
+        // the drawn snip
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+        ctx.lineWidth = 4.2;
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.setLineDash([9, 4]);
+        ctx.strokeStyle = isDark ? '#f5f2eb' : '#292524';
+        ctx.lineWidth = 2;
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.restore();
+      }
+      // Scissors glyph riding the fingertip, rotated along the cut
+      const tip = cutPointer || projectPoint(worldToCamera(cutCurrent, cam), width, height);
+      const a0 = projectPoint(worldToCamera(cutStart, cam), width, height);
+      const ang = Math.atan2(tip.y - a0.y, tip.x - a0.x);
+      ctx.save();
+      ctx.translate(tip.x, tip.y);
+      ctx.rotate(ang + Math.PI);
+      ctx.font = '22px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('✂', 0, 0);
+      ctx.restore();
+      if (cutLabel && cutPreviewFaces && cutPreviewFaces.length) {
+        ctx.save();
+        ctx.font = '600 11.5px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+        const tw = ctx.measureText(cutLabel).width;
+        const bx = Math.min(width - tw - 22, Math.max(10, tip.x - tw * 0.5 - 8));
+        const by = Math.max(12, tip.y - 46);
+        ctx.fillStyle = 'rgba(185, 28, 28, 0.94)';
+        roundRect(ctx, bx, by, tw + 16, 22, 11);
+        ctx.fill();
+        ctx.fillStyle = '#ffffff';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(cutLabel, bx + 8, by + 11.5);
+        ctx.restore();
+      }
+    }
+    ctx.restore();
+    return;
+  }
 
   // ---- Mode A: Direct Drag-to-Fold / Unfold visual cues ----
   if (interactMode === 'drag') {
@@ -1749,7 +1886,7 @@ function roundRect(ctx, x, y, w, h, r) {
  * Render the 2D Crease Pattern (전개도) mini-canvas showing all Valley (blue)
  * and Mountain (red) crease lines mapped onto the paper's true aspect ratio.
  */
-export function renderCreasePattern2D(ctx, size, creases, isDark = false, paperAspect = 1) {
+export function renderCreasePattern2D(ctx, size, creases, isDark = false, paperAspect = 1, faces = null, cuts = null) {
   ctx.clearRect(0, 0, size, size);
   const pad = 10;
   const maxInner = size - pad * 2;
@@ -1758,30 +1895,70 @@ export function renderCreasePattern2D(ctx, size, creases, isDark = false, paperA
   const drawH = aspect >= 1 ? maxInner / aspect : maxInner;
   const ox = (size - drawW) * 0.5;
   const oy = (size - drawH) * 0.5;
+  const toX = (u) => ox + u * drawW;
+  const toY = (v) => oy + (1 - v) * drawH;
 
-  ctx.fillStyle = isDark ? '#25232a' : '#fbf8f2';
-  ctx.strokeStyle = isDark ? 'rgba(255,255,255,0.25)' : 'rgba(120,100,80,0.4)';
-  ctx.lineWidth = 1.5;
-  ctx.fillRect(ox, oy, drawW, drawH);
-  ctx.strokeRect(ox, oy, drawW, drawH);
-
-  if (!creases || creases.length === 0) return;
+  const paperFill = isDark ? '#25232a' : '#fbf8f2';
+  const edgeStroke = isDark ? 'rgba(255,255,255,0.25)' : 'rgba(120,100,80,0.4)';
+  const hasCuts = Array.isArray(cuts) && cuts.length > 0 && Array.isArray(faces) && faces.some(f => f.uvs && f.uvs.length >= 3);
 
   ctx.save();
-  ctx.lineCap = 'round';
-  for (const c of creases) {
-    const x1 = ox + c.u1 * drawW;
-    const y1 = oy + (1 - c.v1) * drawH;
-    const x2 = ox + c.u2 * drawW;
-    const y2 = oy + (1 - c.v2) * drawH;
-    const isM = c.type === 'mountain';
+  if (hasCuts) {
+    // Ghost of the original sheet, then the paper that is actually left after cutting
+    ctx.setLineDash([3, 3]);
+    ctx.strokeStyle = isDark ? 'rgba(255,255,255,0.14)' : 'rgba(120,100,80,0.22)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(ox, oy, drawW, drawH);
+    ctx.setLineDash([]);
     ctx.beginPath();
-    ctx.setLineDash(isM ? [5, 2.5, 1.5, 2.5] : [4, 3]);
-    ctx.strokeStyle = isM ? '#dc2626' : '#2563eb';
-    ctx.lineWidth = 1.35;
-    ctx.moveTo(x1, y1);
-    ctx.lineTo(x2, y2);
+    for (const f of faces) {
+      if (!f.uvs || f.uvs.length < 3) continue;
+      ctx.moveTo(toX(f.uvs[0].u), toY(f.uvs[0].v));
+      for (let k = 1; k < f.uvs.length; k++) ctx.lineTo(toX(f.uvs[k].u), toY(f.uvs[k].v));
+      ctx.closePath();
+    }
+    ctx.fillStyle = paperFill;
+    ctx.fill('nonzero');
+    ctx.strokeStyle = paperFill;
+    ctx.lineWidth = 0.8;
     ctx.stroke();
+    ctx.clip('nonzero');
+  } else {
+    ctx.fillStyle = paperFill;
+    ctx.strokeStyle = edgeStroke;
+    ctx.lineWidth = 1.5;
+    ctx.fillRect(ox, oy, drawW, drawH);
+    ctx.strokeRect(ox, oy, drawW, drawH);
+  }
+
+  if (creases && creases.length > 0) {
+    ctx.lineCap = 'round';
+    for (const c of creases) {
+      const isM = c.type === 'mountain';
+      ctx.beginPath();
+      ctx.setLineDash(isM ? [5, 2.5, 1.5, 2.5] : [4, 3]);
+      ctx.strokeStyle = isM ? '#dc2626' : '#2563eb';
+      ctx.lineWidth = 1.35;
+      ctx.moveTo(toX(c.u1), toY(c.v1));
+      ctx.lineTo(toX(c.u2), toY(c.v2));
+      ctx.stroke();
+    }
   }
   ctx.restore();
+
+  if (hasCuts) {
+    // Scissor cuts: solid dark lines
+    ctx.save();
+    ctx.setLineDash([]);
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = isDark ? 'rgba(255,255,255,0.75)' : 'rgba(41,37,36,0.85)';
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    for (const c of cuts) {
+      ctx.moveTo(toX(c.u1), toY(c.v1));
+      ctx.lineTo(toX(c.u2), toY(c.v2));
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
 }
